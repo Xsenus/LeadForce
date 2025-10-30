@@ -154,8 +154,17 @@ LibreOffice (Linux) либо `pywin32` (Windows).
 ### Продакшн через Gunicorn
 
 ```bash
-gunicorn -w 1 -b 0.0.0.0:12345 --timeout 120 app:app
+/srv/leadforce/venv/bin/gunicorn \
+  --workers 3 --timeout 120 \
+  --bind unix:/srv/leadforce/run/leadforce.sock \
+  --access-logfile /srv/leadforce/logs/gunicorn.access.log \
+  --error-logfile /srv/leadforce/logs/gunicorn.error.log \
+  app:app
 ```
+
+> Пример выше соответствует конфигурации systemd и предполагает, что код
+> развёрнут в `/srv/leadforce/app`, а виртуальное окружение расположено в
+> `/srv/leadforce/venv`.
 
 ---
 
@@ -165,14 +174,25 @@ gunicorn -w 1 -b 0.0.0.0:12345 --timeout 120 app:app
 
 ```ini
 [Unit]
-Description=LeadForce Flask Service
+Description=LeadForce (Flask) via gunicorn (unix socket)
 After=network.target
 
 [Service]
-User=root
-WorkingDirectory=/root/LeadForcePython
-ExecStart=/usr/bin/python3 -m gunicorn -w 1 -b 0.0.0.0:12345 --timeout 120 app:app
+User=leadforce
+Group=leadforce
+WorkingDirectory=/srv/leadforce/app
+Environment="PYTHONUNBUFFERED=1"
+#EnvironmentFile=/srv/leadforce/.env
+ExecStartPre=/usr/bin/mkdir -p /srv/leadforce/run
+ExecStartPre=/usr/bin/chown leadforce:leadforce /srv/leadforce/run
+ExecStart=/srv/leadforce/venv/bin/gunicorn \
+  --workers 3 --timeout 120 \
+  --bind unix:/srv/leadforce/run/leadforce.sock \
+  --access-logfile /srv/leadforce/logs/gunicorn.access.log \
+  --error-logfile /srv/leadforce/logs/gunicorn.error.log \
+  app:app
 Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -190,38 +210,82 @@ sudo systemctl restart leadforce
 
 ## 🤖 Автоматическое развёртывание на VPS
 
-В репозитории подготовлен workflow `.github/workflows/deploy.yml`, который
-копирует свежий код на сервер, устанавливает зависимости и настраивает
-systemd-сервис, даже если на VPS ещё ничего не развёрнуто.
+Workflow `.github/workflows/deploy.yml` копирует свежий код на сервер,
+подготавливает окружение и обновляет сервис, даже если перед деплоем на VPS
+нет ни пользователей, ни директорий.
 
 1. Создайте на GitHub Secrets:
    - `VPS_HOST` — IP или доменное имя сервера.
-   - `VPS_USER` — пользователь (для приведённого юнита подойдёт `root`).
-   - `VPS_SSH_KEY` — приватный SSH-ключ (формат OpenSSH). Лучше создать
-     отдельную пару ключей только для деплоя.
+   - `VPS_USER` — пользователь с правами `root` (workflow выполняет
+     административные действия).
+   - `VPS_SSH_KEY` — приватный SSH-ключ (формат OpenSSH).
    - `VPS_PORT` — (опционально) SSH-порт, если отличается от `22`.
-2. При первом запуске workflow сам создаст каталог `/root/LeadForcePython` и
-   скопирует туда проект (предварительно очищая целевую папку).
-3. После копирования выполняется `scripts/deploy.sh`: скрипт убедится в
-   наличии Python, установит LibreOffice (для PDF на Linux), поставит
-   зависимости из `requirements.txt`, скопирует шаблон юнита из
-   `deploy/leadforce.service` в `/etc/systemd/system/leadforce.service`,
-   выполнит `systemctl enable --now leadforce` и обновит сервис при следующих
-   деплоях.
-4. Workflow можно запустить вручную через **Run workflow** или просто сделать
+2. При запуске workflow:
+   - создаётся системный пользователь `leadforce` с домашней директорией
+     `/srv/leadforce`;
+   - формируются каталоги `/srv/leadforce/app`, `/srv/leadforce/logs`,
+     `/srv/leadforce/run` и виртуальное окружение `/srv/leadforce/venv`;
+   - устанавливаются пакеты `python3-venv`, `nginx`, `certbot`,
+     `python3-certbot-nginx`, `rsync` и LibreOffice (для PDF-конвертации);
+   - проект синхронизируется в `/srv/leadforce/app` (каталог очищается перед
+     загрузкой);
+   - зависимости ставятся внутри окружения, после чего обновляется systemd
+     unit `/etc/systemd/system/leadforce.service` и перезапускается сервис.
+3. Workflow можно запустить вручную через **Run workflow** или просто сделать
    push в ветку `main` — деплой выполняется автоматически.
 
 ### Ручной запуск скрипта развёртывания
 
-На самом сервере доступен вспомогательный скрипт `scripts/deploy.sh`.
+На сервере также можно выполнить скрипт вручную:
 
 ```bash
-sudo APP_DIR=/root/LeadForcePython SERVICE_NAME=leadforce scripts/deploy.sh
+sudo BASE_DIR=/srv/leadforce SERVICE_NAME=leadforce scripts/deploy.sh
 ```
 
-Скрипт проверит наличие Python/LibreOffice, установит зависимости, обновит
-unit-файл (если он изменился) и перезапустит сервис. При первом запуске он
-создаст директорию `output/` и включит автозапуск `leadforce`.
+Скрипт создаст пользователя и каталоги (если их ещё нет), настроит окружение
+`/srv/leadforce/venv`, установит зависимости, обновит unit-файл и перезапустит
+сервис. При повторных запусках он аккуратно обновит код и зависимости без
+необходимости ручного вмешательства.
+
+### Ручная подготовка VPS (если автоматизация временно недоступна)
+
+Последовательность команд соответствует тому, что выполняет скрипт и workflow:
+
+1. **Базовые пакеты**
+   ```bash
+   sudo apt update
+   sudo apt install -y python3-venv nginx certbot python3-certbot-nginx rsync
+   ```
+2. **Пользователь и директории**
+   ```bash
+   sudo useradd -r -m -d /srv/leadforce -s /usr/sbin/nologin leadforce || true
+   sudo mkdir -p /srv/leadforce/app /srv/leadforce/logs /srv/leadforce/run
+   sudo python3 -m venv /srv/leadforce/venv
+   sudo chown -R leadforce:leadforce /srv/leadforce
+   sudo chmod -R u=rwX,g=rX,o= /srv/leadforce
+   sudo touch /srv/leadforce/logs/gunicorn.access.log /srv/leadforce/logs/gunicorn.error.log
+   sudo chown -R leadforce:leadforce /srv/leadforce/logs
+   ```
+3. **Загрузка приложения**
+   ```bash
+   sudo rsync -a --delete <путь_к_проекту>/ /srv/leadforce/app/
+   sudo chown -R leadforce:leadforce /srv/leadforce/app
+   ```
+4. **Зависимости**
+   ```bash
+   sudo -u leadforce /srv/leadforce/venv/bin/pip install --upgrade pip wheel
+   sudo -u leadforce /srv/leadforce/venv/bin/pip install -r /srv/leadforce/app/requirements.txt
+   ```
+5. **systemd-юнит** — содержимое совпадает с `deploy/leadforce.service`.
+   ```bash
+   sudo cp deploy/leadforce.service /etc/systemd/system/leadforce.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now leadforce
+   sudo systemctl status leadforce --no-pager
+   ```
+
+При следующем деплое достаточно обновить код (например, через `rsync` или git)
+и выполнить пункты 4–5, чтобы подтянуть зависимости и перезапустить сервис.
 
 ---
 

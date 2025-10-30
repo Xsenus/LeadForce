@@ -4,15 +4,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-APP_DIR=${APP_DIR:-$PROJECT_ROOT}
-PYTHON_BIN=${PYTHON_BIN:-/usr/bin/python3}
+BASE_DIR=${BASE_DIR:-/srv/leadforce}
+APP_DIR=${APP_DIR:-${BASE_DIR}/app}
+VENV_DIR=${VENV_DIR:-${BASE_DIR}/venv}
+LOG_DIR=${LOG_DIR:-${BASE_DIR}/logs}
+RUN_DIR=${RUN_DIR:-${BASE_DIR}/run}
 SERVICE_NAME=${SERVICE_NAME:-leadforce}
+SERVICE_USER=${SERVICE_USER:-leadforce}
+SERVICE_GROUP=${SERVICE_GROUP:-$SERVICE_USER}
 SYSTEMD_UNIT_PATH=${SYSTEMD_UNIT_PATH:-/etc/systemd/system/${SERVICE_NAME}.service}
 SYSTEMD_UNIT_TEMPLATE=${SYSTEMD_UNIT_TEMPLATE:-${PROJECT_ROOT}/deploy/leadforce.service}
+REQUIREMENTS_FILE=${REQUIREMENTS_FILE:-${APP_DIR}/requirements.txt}
+APT_PACKAGES=(python3-venv nginx certbot python3-certbot-nginx rsync)
 
 log() {
   echo "[deploy] $*"
 }
+
+if [[ ${EUID:-0} -ne 0 ]]; then
+  log "Скрипт нужно запускать от root" >&2
+  exit 1
+fi
 
 APT_UPDATED=false
 
@@ -29,6 +41,26 @@ apt_update_once() {
   fi
 }
 
+ensure_apt_packages() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    return
+  fi
+
+  local missing=()
+  for pkg in "$@"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      missing+=("$pkg")
+    fi
+  done
+
+  if [ ${#missing[@]} -gt 0 ]; then
+    log "Устанавливаем пакеты: ${missing[*]}"
+    apt_update_once
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y "${missing[@]}"
+  fi
+}
+
 ensure_directory() {
   local dir="$1"
   if [ ! -d "$dir" ]; then
@@ -37,27 +69,30 @@ ensure_directory() {
   fi
 }
 
-ensure_python() {
-  if command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-    return
+run_as_service_user() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$SERVICE_USER" -- "$@"
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -u "$SERVICE_USER" -- "$@"
+  else
+    local cmd
+    printf -v cmd '%q ' "$@"
+    su -s /bin/bash "$SERVICE_USER" -c "$cmd"
+  fi
+}
+
+ensure_service_user() {
+  if ! id "$SERVICE_USER" >/dev/null 2>&1; then
+    log "Создаём системного пользователя $SERVICE_USER"
+    useradd -r -m -d "$BASE_DIR" -s /usr/sbin/nologin "$SERVICE_USER"
   fi
 
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN=$(command -v python3)
-    return
+  if [ ! -d "$BASE_DIR" ]; then
+    mkdir -p "$BASE_DIR"
   fi
 
-  if command -v apt-get >/dev/null 2>&1; then
-    log "Устанавливаем python3 и pip через apt"
-    apt_update_once
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y python3 python3-pip
-    PYTHON_BIN=$(command -v python3)
-    return
-  fi
-
-  log "Не удалось найти интерпретатор Python. Установите python3 вручную." >&2
-  exit 1
+  chown "$SERVICE_USER":"$SERVICE_GROUP" "$BASE_DIR"
+  chmod 750 "$BASE_DIR"
 }
 
 ensure_libreoffice() {
@@ -75,21 +110,47 @@ ensure_libreoffice() {
   fi
 }
 
-ensure_python
+ensure_apt_packages "${APT_PACKAGES[@]}"
+ensure_service_user
 ensure_directory "$APP_DIR"
+ensure_directory "$LOG_DIR"
+ensure_directory "$RUN_DIR"
+chmod 750 "$LOG_DIR" "$RUN_DIR"
 
-if [ "$PROJECT_ROOT" != "$APP_DIR" ]; then
-  log "Переключаемся в каталог приложения $APP_DIR"
-  cd "$APP_DIR"
-else
-  cd "$PROJECT_ROOT"
+SYSTEM_PYTHON=${SYSTEM_PYTHON:-$(command -v python3 || true)}
+if [ -z "$SYSTEM_PYTHON" ]; then
+  log "Не удалось найти системный python3" >&2
+  exit 1
 fi
 
-ensure_directory "$APP_DIR/output"
+if [ ! -d "$VENV_DIR/bin" ]; then
+  log "Создаём виртуальное окружение в $VENV_DIR"
+  "$SYSTEM_PYTHON" -m venv "$VENV_DIR"
+fi
 
-log "Обновляем зависимости"
-"$PYTHON_BIN" -m pip install --upgrade pip
-"$PYTHON_BIN" -m pip install -r requirements.txt
+chown -R "$SERVICE_USER":"$SERVICE_GROUP" "$BASE_DIR"
+
+if [ "$PROJECT_ROOT" != "$APP_DIR" ]; then
+  log "Синхронизируем код из $PROJECT_ROOT в $APP_DIR"
+  rsync -a --delete "$PROJECT_ROOT"/ "$APP_DIR"/
+fi
+
+run_as_service_user mkdir -p "$APP_DIR/output"
+touch "$LOG_DIR/gunicorn.access.log" "$LOG_DIR/gunicorn.error.log"
+chown -R "$SERVICE_USER":"$SERVICE_GROUP" "$APP_DIR" "$LOG_DIR" "$RUN_DIR"
+
+PIP_BIN="$VENV_DIR/bin/pip"
+if [ -x "$PIP_BIN" ]; then
+  log "Обновляем pip и wheel"
+  run_as_service_user "$PIP_BIN" install --upgrade pip wheel
+fi
+
+if [ -f "$REQUIREMENTS_FILE" ]; then
+  log "Устанавливаем зависимости из $REQUIREMENTS_FILE"
+  run_as_service_user "$PIP_BIN" install -r "$REQUIREMENTS_FILE"
+else
+  log "requirements.txt не найден по пути $REQUIREMENTS_FILE"
+fi
 
 ensure_libreoffice
 
@@ -113,7 +174,7 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
   systemctl restart "$SERVICE_NAME"
 else
-  log "systemctl не найден. Запустите сервис вручную: $PYTHON_BIN -m gunicorn ..." >&2
+  log "systemctl не найден. Запустите сервис вручную: $VENV_DIR/bin/gunicorn ..." >&2
 fi
 
 log "Готово"
