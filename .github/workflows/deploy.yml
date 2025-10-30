@@ -2,7 +2,7 @@ name: Deploy to VPS
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -22,7 +22,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Подготовка VPS (создать юзера/папки/venv). Выполняется под пользователем из secrets.VPS_USER
       - name: Prepare VPS directories
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -30,7 +29,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          fingerprint: ${{ secrets.VPS_FINGERPRINT }}   # добавь секрет с SHA256 отпечатком хоста
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }} # добавь секрет SHA256:... от ssh-host
           script: |
             set -euo pipefail
             if ! command -v python3 >/dev/null 2>&1; then
@@ -54,7 +53,6 @@ jobs:
             sudo touch "${{ env.BASE_DIR }}/logs/gunicorn.access.log" "${{ env.BASE_DIR }}/logs/gunicorn.error.log"
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/logs"
 
-      # Сборка ЛЁГКОГО архива деплоя: исключаем лишнее (git, кэши, node_modules и т.п.)
       - name: Build deploy archive
         run: |
           set -euo pipefail
@@ -73,7 +71,9 @@ jobs:
             Templates \
             scripts
 
-      # Копируем ОДИН архив (быстро) на сервер
+      - name: Check deploy.tgz exists
+        run: ls -lh deploy.tgz
+
       - name: Upload deploy.tgz to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -86,10 +86,9 @@ jobs:
           target: /tmp/
           overwrite: true
           debug: true
-          timeout: 600
-          command_timeout: 600
+          timeout: 600s # <-- с единицами!
+          command_timeout: 600s # <-- с единицами!
 
-      # Распаковываем архив в целевую директорию, назначаем владельца
       - name: Unpack on VPS
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -105,7 +104,6 @@ jobs:
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.TARGET_DIR }}"
             sudo rm -f /tmp/deploy.tgz
 
-      # Запуск твоего деплой-скрипта (уже на распакованном коде)
       - name: Run remote deploy script
         uses: appleboy/ssh-action@v1.0.3
         with:
