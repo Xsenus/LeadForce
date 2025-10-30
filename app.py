@@ -13,11 +13,9 @@ from docx.shared import Mm
 from flask import Flask, jsonify, request, send_file
 from num2words import num2words
 from qrcode.constants import ERROR_CORRECT_M
+from PIL import Image
+from typing import cast
 import zipfile
-
-if platform.system() == "Windows":
-    import pythoncom
-    import win32com.client
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
 OUTPUT_DIR = "./output"
@@ -69,6 +67,9 @@ def fill_template_xml(template_path: str, replacements: dict, output_path: str):
 
 def convert_to_pdf(input_docx: str, output_dir: str):
     if platform.system() == "Windows":
+        import pythoncom  # type: ignore
+        import win32com.client  # type: ignore
+
         pythoncom.CoInitialize()
         try:
             word = win32com.client.Dispatch("Word.Application")
@@ -157,8 +158,9 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     qr = qrcode.QRCode(error_correction=ERROR_CORRECT_M, box_size=10, border=4)
     qr.add_data(payload)
     qr.make(fit=True)
-    image = qr.make_image(fill_color="black", back_color="white")
-    image.save(qr_path)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    pil_image = qr_image.get_image() if hasattr(qr_image, "get_image") else qr_image
+    cast(Image.Image, pil_image).save(qr_path, format="PNG")
 
     return payload, qr_path
 
