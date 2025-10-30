@@ -12,6 +12,7 @@ from typing import Any, Optional, cast
 from docx import Document
 from docx.shared import Mm
 from flask import Flask, jsonify, request, send_file
+from flasgger import Swagger
 from num2words import num2words
 
 try:
@@ -39,6 +40,194 @@ PLACEHOLDERS = [
 ]
 
 app = Flask(__name__)
+
+SWAGGER_PARAMETERS = {
+    "price": {
+        "name": "price",
+        "in": "query",
+        "description": "Стоимость в рублях (например, 12345.67)",
+        "schema": {"type": "string"}
+    },
+    "price_text": {
+        "name": "price_text",
+        "in": "query",
+        "description": "Сумма прописью, если требуется переопределить автоматическую генерацию",
+        "schema": {"type": "string"}
+    },
+    "bill_date": {
+        "name": "bill_date",
+        "in": "query",
+        "description": "Дата счёта (формат дд.мм.гггг)",
+        "schema": {"type": "string"}
+    },
+    "invoiceDate": {
+        "name": "invoiceDate",
+        "in": "query",
+        "description": "Альтернативный параметр даты счёта",
+        "schema": {"type": "string"}
+    },
+    "deal": {
+        "name": "deal",
+        "in": "query",
+        "description": "Номер сделки/счёта",
+        "schema": {"type": "string"}
+    },
+    "service": {
+        "name": "service",
+        "in": "query",
+        "description": "Название услуги",
+        "schema": {"type": "string"}
+    },
+    "city": {
+        "name": "city",
+        "in": "query",
+        "description": "Город клиента",
+        "schema": {"type": "string"}
+    },
+    "lead_sum": {
+        "name": "lead_sum",
+        "in": "query",
+        "description": "Общая сумма лида",
+        "schema": {"type": "string"}
+    },
+    "lead_cost": {
+        "name": "lead_cost",
+        "in": "query",
+        "description": "Стоимость лида",
+        "schema": {"type": "string"}
+    },
+    "revenue": {
+        "name": "revenue",
+        "in": "query",
+        "description": "Выручка",
+        "schema": {"type": "string"}
+    },
+    "email": {
+        "name": "email",
+        "in": "query",
+        "description": "Email клиента",
+        "schema": {"type": "string", "format": "email"}
+    },
+    "phone": {
+        "name": "phone",
+        "in": "query",
+        "description": "Телефон клиента",
+        "schema": {"type": "string"}
+    },
+    "name": {
+        "name": "name",
+        "in": "query",
+        "description": "Имя клиента",
+        "schema": {"type": "string"}
+    },
+    "inn": {
+        "name": "inn",
+        "in": "query",
+        "description": "ИНН клиента",
+        "schema": {"type": "string"}
+    },
+    "companyName": {
+        "name": "companyName",
+        "in": "query",
+        "description": "Название компании клиента",
+        "schema": {"type": "string"}
+    },
+    "qr_sum": {
+        "name": "qr_sum",
+        "in": "query",
+        "description": "Сумма платежа в копейках для QR",
+        "schema": {"type": "string"}
+    },
+    "qr_purpose": {
+        "name": "qr_purpose",
+        "in": "query",
+        "description": "Назначение платежа для QR",
+        "schema": {"type": "string"}
+    },
+    "qr_width_mm": {
+        "name": "qr_width_mm",
+        "in": "query",
+        "description": "Ширина QR в миллиметрах при вставке в шаблон",
+        "schema": {"type": "number"}
+    },
+    "qr_name": {
+        "name": "qr_name",
+        "in": "query",
+        "description": "Получатель платежа",
+        "schema": {"type": "string"}
+    },
+    "qr_personal_account": {
+        "name": "qr_personal_account",
+        "in": "query",
+        "description": "Расчётный счёт получателя",
+        "schema": {"type": "string"}
+    },
+    "qr_bank_name": {
+        "name": "qr_bank_name",
+        "in": "query",
+        "description": "Название банка",
+        "schema": {"type": "string"}
+    },
+    "qr_bic": {
+        "name": "qr_bic",
+        "in": "query",
+        "description": "БИК банка",
+        "schema": {"type": "string"}
+    },
+    "qr_correspondent_account": {
+        "name": "qr_correspondent_account",
+        "in": "query",
+        "description": "Корреспондентский счёт",
+        "schema": {"type": "string"}
+    },
+    "qr_inn": {
+        "name": "qr_inn",
+        "in": "query",
+        "description": "ИНН получателя",
+        "schema": {"type": "string"}
+    },
+    "qr_kpp": {
+        "name": "qr_kpp",
+        "in": "query",
+        "description": "КПП получателя",
+        "schema": {"type": "string"}
+    },
+    "qr_payer_address": {
+        "name": "qr_payer_address",
+        "in": "query",
+        "description": "Адрес плательщика",
+        "schema": {"type": "string"}
+    }
+}
+
+swagger_template = {
+    "openapi": "3.0.2",
+    "info": {
+        "title": "LeadForce Document Generator",
+        "description": "API для генерации документов и банковских QR-кодов",
+        "version": "1.0.0"
+    },
+    "components": {
+        "parameters": SWAGGER_PARAMETERS
+    }
+}
+
+swagger_config = {
+    "headers": [],
+    "specs": [
+        {
+            "endpoint": "openapi",
+            "route": "/openapi.json",
+            "rule_filter": lambda rule: True,
+            "model_filter": lambda tag: True,
+        }
+    ],
+    "static_url_path": "/flasgger_static",
+    "swagger_ui": True,
+    "specs_route": "/apidocs/"
+}
+
+swagger = Swagger(app, template=swagger_template, config=swagger_config)
 
 DEFAULT_PAYMENT_DETAILS = {
     "Name": "ИП Абакумова Наталья Александровна",
@@ -422,11 +611,27 @@ def _build_service_description() -> dict:
 
 @app.route("/")
 def index():
+    """Описание сервиса
+    ---
+    tags:
+      - Service
+    responses:
+      200:
+        description: JSON со списком доступных маршрутов
+    """
     return jsonify(_build_service_description())
 
 
 @app.route("/docs")
 def docs():
+    """Дублирующий endpoint описания сервиса
+    ---
+    tags:
+      - Service
+    responses:
+      200:
+        description: JSON со списком доступных маршрутов
+    """
     return jsonify(_build_service_description())
 
 
@@ -437,6 +642,48 @@ def favicon():
 
 @app.route("/Document/GetPdf")
 def get_pdf():
+    """Получить PDF с заполненным шаблоном
+    ---
+    tags:
+      - Documents
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_width_mm'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: PDF файл с заполненными данными
+        content:
+          application/pdf:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
@@ -447,6 +694,48 @@ def get_pdf():
 
 @app.route("/Document/GetDocx")
 def get_docx():
+    """Получить DOCX с заполненным шаблоном
+    ---
+    tags:
+      - Documents
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_width_mm'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: DOCX файл с заполненными данными
+        content:
+          application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
@@ -457,6 +746,48 @@ def get_docx():
 
 @app.route("/Document/GetPdfZip")
 def get_pdf_zip():
+    """Получить ZIP с PDF файлом
+    ---
+    tags:
+      - Documents
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_width_mm'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: ZIP архив с PDF
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
@@ -468,6 +799,48 @@ def get_pdf_zip():
 
 @app.route("/Document/GetDocxZip")
 def get_docx_zip():
+    """Получить ZIP с DOCX файлом
+    ---
+    tags:
+      - Documents
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_width_mm'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: ZIP архив с DOCX
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
@@ -479,6 +852,48 @@ def get_docx_zip():
 
 @app.route("/Document/GetAllZip")
 def get_all_zip():
+    """Получить ZIP с DOCX, PDF и QR
+    ---
+    tags:
+      - Documents
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_width_mm'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: ZIP архив с документами и QR
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         docx_path, pdf_path, qr_path = build_doc(replacements, payment_details, qr_width_mm)
@@ -496,6 +911,54 @@ def get_all_zip():
 
 @app.route("/Document/GetPaymentQr")
 def get_payment_qr():
+    """Получить PNG с банковским QR-кодом
+    ---
+    tags:
+      - QR
+    parameters:
+      - $ref: '#/components/parameters/price'
+      - $ref: '#/components/parameters/price_text'
+      - $ref: '#/components/parameters/bill_date'
+      - $ref: '#/components/parameters/invoiceDate'
+      - $ref: '#/components/parameters/deal'
+      - $ref: '#/components/parameters/service'
+      - $ref: '#/components/parameters/city'
+      - $ref: '#/components/parameters/lead_sum'
+      - $ref: '#/components/parameters/lead_cost'
+      - $ref: '#/components/parameters/revenue'
+      - $ref: '#/components/parameters/email'
+      - $ref: '#/components/parameters/phone'
+      - $ref: '#/components/parameters/name'
+      - $ref: '#/components/parameters/inn'
+      - $ref: '#/components/parameters/companyName'
+      - $ref: '#/components/parameters/qr_sum'
+      - $ref: '#/components/parameters/qr_purpose'
+      - $ref: '#/components/parameters/qr_name'
+      - $ref: '#/components/parameters/qr_personal_account'
+      - $ref: '#/components/parameters/qr_bank_name'
+      - $ref: '#/components/parameters/qr_bic'
+      - $ref: '#/components/parameters/qr_correspondent_account'
+      - $ref: '#/components/parameters/qr_inn'
+      - $ref: '#/components/parameters/qr_kpp'
+      - $ref: '#/components/parameters/qr_payer_address'
+    responses:
+      200:
+        description: PNG файл с QR-кодом
+        headers:
+          X-Payment-QR-Payload:
+            description: Строковое представление данных QR
+            schema:
+              type: string
+        content:
+          image/png:
+            schema:
+              type: string
+              format: binary
+      400:
+        description: QR-код не сформирован
+      500:
+        description: Ошибка генерации QR-кода
+    """
     try:
         replacements = get_replacements()
         payment_details = get_payment_details(request.args, replacements)
