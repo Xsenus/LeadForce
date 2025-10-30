@@ -40,6 +40,10 @@ PLACEHOLDERS = [
 ]
 
 app = Flask(__name__)
+app.config["SWAGGER"] = {
+    "openapi": "3.0.2",
+    "uiversion": 3,
+}
 
 SWAGGER_PARAMETERS = {
     "price": {
@@ -228,6 +232,7 @@ swagger_config = {
 }
 
 swagger = Swagger(app, template=swagger_template, config=swagger_config)
+swagger.template.pop("swagger", None)
 
 DEFAULT_PAYMENT_DETAILS = {
     "Name": "ИП Абакумова Наталья Александровна",
