@@ -7,14 +7,24 @@ import uuid
 from datetime import datetime
 from io import BytesIO
 
-import qrcode
+from typing import Optional, cast
+
 from docx import Document
 from docx.shared import Mm
 from flask import Flask, jsonify, request, send_file
 from num2words import num2words
-from qrcode.constants import ERROR_CORRECT_M
-from PIL import Image
-from typing import cast
+
+try:
+    import qrcode  # type: ignore
+    from qrcode.constants import ERROR_CORRECT_M  # type: ignore
+except ImportError:  # pragma: no cover - handled at runtime
+    qrcode = None  # type: ignore
+    ERROR_CORRECT_M = None  # type: ignore
+
+try:
+    from PIL import Image  # type: ignore
+except ImportError:  # pragma: no cover - handled at runtime
+    Image = None  # type: ignore
 import zipfile
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
@@ -149,7 +159,25 @@ def build_payment_qr_payload(details: dict) -> str:
     return "|".join(parts)
 
 
+def _require_qr_dependencies() -> Optional[str]:
+    missing = []
+    if qrcode is None:
+        missing.append("qrcode")
+    if Image is None:
+        missing.append("Pillow")
+    if missing:
+        return ", ".join(missing)
+    return None
+
+
 def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
+    missing = _require_qr_dependencies()
+    if missing:
+        raise RuntimeError(
+            "Для генерации QR-кода необходимо установить зависимости: "
+            f"{missing}. Выполните 'pip install -r requirements.txt'."
+        )
+
     payload = build_payment_qr_payload(details)
     if len(payload) <= len("ST00012"):
         return "", ""
@@ -345,7 +373,15 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     docx_path = os.path.join(OUTPUT_DIR, f"{file_id}.docx")
 
     replacements_for_template = dict(replacements)
-    qr_payload, qr_path = generate_payment_qr_image(payment_details, file_id)
+    qr_payload = ""
+    qr_path = ""
+
+    try:
+        qr_payload, qr_path = generate_payment_qr_image(payment_details, file_id)
+    except Exception as qr_error:
+        traceback.print_exc()
+        replacements_for_template["PAYMENT_QR_PAYLOAD"] = str(qr_error)
+        replacements_for_template["PAYMENT_QR_BASE64"] = ""
 
     if qr_payload and qr_path and os.path.exists(qr_path):
         try:
@@ -364,6 +400,36 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
 
     pdf_path = convert_to_pdf(docx_path, OUTPUT_DIR)
     return docx_path, pdf_path, qr_path
+
+def _build_service_description() -> dict:
+    return {
+        "message": "LeadForce Document Generator", 
+        "endpoints": {
+            "pdf": "/Document/GetPdf",
+            "docx": "/Document/GetDocx",
+            "zip_pdf": "/Document/GetPdfZip",
+            "zip_docx": "/Document/GetDocxZip",
+            "zip_all": "/Document/GetAllZip",
+            "qr_png": "/Document/GetPaymentQr"
+        },
+        "docs": "Отправьте GET-запрос на любой endpoint, передав параметры сделки в query string."
+    }
+
+
+@app.route("/")
+def index():
+    return jsonify(_build_service_description())
+
+
+@app.route("/docs")
+def docs():
+    return jsonify(_build_service_description())
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return ("", 204)
+
 
 @app.route("/Document/GetPdf")
 def get_pdf():
@@ -429,7 +495,10 @@ def get_payment_qr():
     try:
         replacements = get_replacements()
         payment_details = get_payment_details(request.args, replacements)
-        qr_payload, qr_path = generate_payment_qr_image(payment_details, str(uuid.uuid4()))
+        try:
+            qr_payload, qr_path = generate_payment_qr_image(payment_details, str(uuid.uuid4()))
+        except RuntimeError as dependency_error:
+            return jsonify({"error": str(dependency_error)}), 500
 
         if not qr_payload or not qr_path or not os.path.exists(qr_path):
             return jsonify({"error": "Не удалось сформировать QR-код"}), 400
