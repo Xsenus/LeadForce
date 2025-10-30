@@ -59,7 +59,9 @@ PLACEHOLDERS = [
     "ID", "INVOICE_DATE", "CUSTOMER", "PRODUCT", "SUM", "AMOUNT_IN_WORDS",
     "DEAL", "SERVICE", "CITY", "LEAD_SUM", "LEAD_COST", "REVENUE", "PRICE",
     "EMAIL", "PHONE", "NAME", "INN", "COMPANYNAME", "PAYMENT_QR_BASE64",
-    "PAYMENT_QR_PAYLOAD"
+    "PAYMENT_QR_PAYLOAD",
+    "CUSTOMER_NAME", "CUSTOMER_EMAIL", "CUSTOMER_PHONE",
+    "CUSTOMER_INN", "CUSTOMER_COMPANYNAME"
 ]
 
 app = Flask(__name__)
@@ -788,6 +790,13 @@ def get_replacements():
         "NAME": args.get("name", ""),
         "INN": args.get("inn", ""),
         "COMPANYNAME": args.get("companyName", ""),
+        
+        "CUSTOMER_NAME": args.get("name", "").strip(),
+        "CUSTOMER_EMAIL": args.get("email", "").strip(),
+        "CUSTOMER_PHONE": args.get("phone", "").strip(),
+        "CUSTOMER_INN": args.get("inn", "").strip(),
+        "CUSTOMER_COMPANYNAME": args.get("companyName", "").strip(),
+        
         "PAYMENT_QR_BASE64": "",
         "PAYMENT_QR_PAYLOAD": ""
     }
