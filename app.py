@@ -324,7 +324,7 @@ PAYMENT_QR_FIELDS_ORDER = [
 ]
 
 
-DEFAULT_QR_WIDTH_MM = 40
+DEFAULT_QR_WIDTH_MM = 35
 
 
 def build_payment_qr_payload(details: dict) -> str:
