@@ -401,6 +401,27 @@ def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_
     return False
 
 
+def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
+    """Return width that fits into the table cell/row with a small margin."""
+    limits = []
+
+    row_height = getattr(row.height, "mm", None)
+    if row_height:
+        limits.append(row_height)
+
+    cell_width = getattr(cell.width, "mm", None)
+    if cell_width:
+        limits.append(cell_width)
+
+    if not limits:
+        return width_mm
+
+    # Оставляем небольшой зазор в 2 мм, чтобы LibreOffice не "резал" картинку по границе
+    safe_limit = min(limit for limit in limits if limit)
+    safe_limit = max(safe_limit - 2, 5)  # не уменьшаем меньше 5 мм
+    return min(width_mm, safe_limit)
+
+
 def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
     document = Document(docx_path)
 
@@ -411,7 +432,8 @@ def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: f
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
-                if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
+                effective_width = _clamp_width_to_cell(width_mm, row, cell)
+                if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, effective_width):
                     document.save(docx_path)
                     return True
 
