@@ -2,8 +2,7 @@ name: Deploy to VPS
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
   workflow_dispatch:
 
 concurrency:
@@ -23,7 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Подготовка пользователя/папок/venv на VPS
+      # Подготовка VPS (создать юзера/папки/venv). Выполняется под пользователем из secrets.VPS_USER
       - name: Prepare VPS directories
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -31,9 +30,9 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }}   # добавь секрет с SHA256 отпечатком хоста
           script: |
             set -euo pipefail
-            # Пакеты (venv может отсутствовать)
             if ! command -v python3 >/dev/null 2>&1; then
               sudo apt-get update -y
               sudo apt-get install -y python3
@@ -41,7 +40,6 @@ jobs:
             sudo apt-get update -y
             sudo apt-get install -y python3-venv
 
-            # Пользователь + оболочка
             if ! id "${{ env.SERVICE_USER }}" >/dev/null 2>&1; then
               sudo useradd -m -d "${{ env.BASE_DIR }}" -s /bin/bash "${{ env.SERVICE_USER }}"
             else
@@ -49,7 +47,6 @@ jobs:
               sudo chsh -s /bin/bash "${{ env.SERVICE_USER }}"
             fi
 
-            # Каталоги и права
             sudo mkdir -p "${{ env.BASE_DIR }}" "${{ env.TARGET_DIR }}" "${{ env.BASE_DIR }}/logs" "${{ env.BASE_DIR }}/run"
             sudo python3 -m venv "${{ env.BASE_DIR }}/venv" || true
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
@@ -57,20 +54,58 @@ jobs:
             sudo touch "${{ env.BASE_DIR }}/logs/gunicorn.access.log" "${{ env.BASE_DIR }}/logs/gunicorn.error.log"
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/logs"
 
-      # Копирование проекта на VPS
-      - name: Copy project to VPS
+      # Сборка ЛЁГКОГО архива деплоя: исключаем лишнее (git, кэши, node_modules и т.п.)
+      - name: Build deploy archive
+        run: |
+          set -euo pipefail
+          mkdir -p output && touch output/.gitkeep || true
+          tar -czf deploy.tgz \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='venv' \
+            --exclude='__pycache__' \
+            --exclude='.pytest_cache' \
+            --exclude='.mypy_cache' \
+            --exclude='output/*' \
+            app.py \
+            requirements.txt \
+            Templates \
+            scripts
+
+      # Копируем ОДИН архив (быстро) на сервер
+      - name: Upload deploy.tgz to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          source: .
-          target: ${{ env.TARGET_DIR }}
-          strip_components: 0
-          rm: true
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }}
+          source: deploy.tgz
+          target: /tmp/
+          overwrite: true
+          debug: true
+          timeout: 600
+          command_timeout: 600
 
-      # Запуск удалённого деплой-скрипта из репозитория
+      # Распаковываем архив в целевую директорию, назначаем владельца
+      - name: Unpack on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }}
+          script: |
+            set -euo pipefail
+            sudo mkdir -p "${{ env.TARGET_DIR }}"
+            sudo tar -xzf /tmp/deploy.tgz -C "${{ env.TARGET_DIR }}"
+            sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.TARGET_DIR }}"
+            sudo rm -f /tmp/deploy.tgz
+
+      # Запуск твоего деплой-скрипта (уже на распакованном коде)
       - name: Run remote deploy script
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -78,6 +113,7 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
             cd "${{ env.TARGET_DIR }}"
