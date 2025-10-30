@@ -22,6 +22,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Подготовка VPS: пользователь, каталоги, venv, утилиты
       - name: Prepare VPS directories
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -29,16 +30,14 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
-          fingerprint: ${{ secrets.VPS_FINGERPRINT }} # добавь секрет SHA256:... от ssh-host
+          fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
-            if ! command -v python3 >/dev/null 2>&1; then
-              sudo apt-get update -y
-              sudo apt-get install -y python3
-            fi
+            # Пакеты
             sudo apt-get update -y
-            sudo apt-get install -y python3-venv
+            sudo apt-get install -y python3 python3-venv zstd
 
+            # Пользователь + оболочка
             if ! id "${{ env.SERVICE_USER }}" >/dev/null 2>&1; then
               sudo useradd -m -d "${{ env.BASE_DIR }}" -s /bin/bash "${{ env.SERVICE_USER }}"
             else
@@ -46,6 +45,7 @@ jobs:
               sudo chsh -s /bin/bash "${{ env.SERVICE_USER }}"
             fi
 
+            # Каталоги и права
             sudo mkdir -p "${{ env.BASE_DIR }}" "${{ env.TARGET_DIR }}" "${{ env.BASE_DIR }}/logs" "${{ env.BASE_DIR }}/run"
             sudo python3 -m venv "${{ env.BASE_DIR }}/venv" || true
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
@@ -53,11 +53,12 @@ jobs:
             sudo touch "${{ env.BASE_DIR }}/logs/gunicorn.access.log" "${{ env.BASE_DIR }}/logs/gunicorn.error.log"
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/logs"
 
-      - name: Build deploy archive
+      # Сборка лёгкого архива деплоя (Zstandard)
+      - name: Build deploy archive (zstd)
         run: |
           set -euo pipefail
           mkdir -p output && touch output/.gitkeep || true
-          tar -czf deploy.tgz \
+          tar -I 'zstd -3' -cf deploy.tar.zst \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='node_modules' \
@@ -70,11 +71,10 @@ jobs:
             requirements.txt \
             Templates \
             scripts
+          ls -lh deploy.tar.zst
 
-      - name: Check deploy.tgz exists
-        run: ls -lh deploy.tgz
-
-      - name: Upload deploy.tgz to VPS
+      # Быстрая загрузка одного файла
+      - name: Upload deploy.tar.zst to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -82,14 +82,16 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           fingerprint: ${{ secrets.VPS_FINGERPRINT }}
-          source: deploy.tgz
+          source: deploy.tar.zst
           target: /tmp/
           overwrite: true
           debug: true
-          timeout: 600s # <-- с единицами!
-          command_timeout: 600s # <-- с единицами!
+          timeout: 600s # единицы обязательны
+          command_timeout: 600s # единицы обязательны
+          cipher: aes128-gcm@openssh.com
 
-      - name: Unpack on VPS
+      # Распаковка на сервере
+      - name: Unpack on VPS (zstd)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -100,10 +102,11 @@ jobs:
           script: |
             set -euo pipefail
             sudo mkdir -p "${{ env.TARGET_DIR }}"
-            sudo tar -xzf /tmp/deploy.tgz -C "${{ env.TARGET_DIR }}"
+            sudo tar -I zstd -xf /tmp/deploy.tar.zst -C "${{ env.TARGET_DIR }}"
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.TARGET_DIR }}"
-            sudo rm -f /tmp/deploy.tgz
+            sudo rm -f /tmp/deploy.tar.zst
 
+      # Запуск твоего деплой-скрипта
       - name: Run remote deploy script
         uses: appleboy/ssh-action@v1.0.3
         with:
