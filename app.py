@@ -11,6 +11,11 @@ from typing import Any, Optional, cast
 
 from docx import Document
 from docx.shared import Mm
+try:
+    from docx.enum.table import WD_ROW_HEIGHT_RULE, WD_ALIGN_VERTICAL  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - handled at runtime
+    WD_ROW_HEIGHT_RULE = None  # type: ignore[assignment]
+    WD_ALIGN_VERTICAL = None  # type: ignore[assignment]
 from flask import Flask, jsonify, request, send_file
 from flasgger import Swagger
 from num2words import num2words
@@ -445,8 +450,49 @@ def _apply_qr_margin(limit_mm: float) -> float:
     return max(limit_mm - margin, 5)
 
 
+def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
+    """Настраивает параметры строки и ячейки таблицы, чтобы QR полностью уместился."""
+    try:
+        margin = max(QR_CELL_MARGIN_MM, image_width_mm * QR_CELL_MARGIN_RATIO)
+        required_height_mm = image_width_mm + margin
+
+        if WD_ROW_HEIGHT_RULE is not None:
+            try:
+                if getattr(row, "height_rule", None) == WD_ROW_HEIGHT_RULE.EXACTLY:
+                    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+            except Exception:
+                traceback.print_exc()
+
+        current_height_mm = getattr(getattr(row, "height", None), "mm", None)
+        if current_height_mm and current_height_mm < required_height_mm:
+            try:
+                row.height = Mm(required_height_mm)
+                if WD_ROW_HEIGHT_RULE is not None:
+                    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+            except Exception:
+                traceback.print_exc()
+
+        if WD_ALIGN_VERTICAL is not None and cell is not None:
+            try:
+                if cell.vertical_alignment is None:
+                    cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            except Exception:
+                traceback.print_exc()
+    except Exception:
+        traceback.print_exc()
+
+
+def _paragraph_has_placeholder(paragraph) -> bool:
+    if QR_CODE_PLACEHOLDER in getattr(paragraph, "text", ""):
+        return True
+
+    try:
+        return QR_CODE_PLACEHOLDER in ''.join(run.text for run in getattr(paragraph, "runs", []))
+    except Exception:
+        return False
+
+
 def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
-    """Return width that fits into the table cell/row with a safe margin for PDF export."""
     limits = []
 
     row_height = getattr(row.height, "mm", None)
@@ -488,10 +534,12 @@ def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: f
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
-                effective_width = _clamp_width_to_cell(width_mm, row, cell)
-                if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, effective_width):
-                    document.save(docx_path)
-                    return True
+                if any(_paragraph_has_placeholder(paragraph) for paragraph in cell.paragraphs):
+                    effective_width = _clamp_width_to_cell(width_mm, row, cell)
+                    _ensure_cell_can_fit_image(row, cell, effective_width)
+                    if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, effective_width):
+                        document.save(docx_path)
+                        return True
 
     return False
 
