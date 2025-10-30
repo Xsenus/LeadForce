@@ -2,3 +2,4 @@ Flask==3.1.1
 python-docx==1.2.0
 pywin32==311 ; sys_platform == 'win32'
 num2words==0.5.13
+segno==1.6.1
