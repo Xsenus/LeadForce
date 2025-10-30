@@ -1,14 +1,19 @@
+import base64
 import os
-import uuid
 import platform
 import subprocess
 import traceback
+import uuid
 from datetime import datetime
-from flask import Flask, request, send_file, jsonify
 from io import BytesIO
+
+import qrcode
+from docx import Document
+from docx.shared import Mm
+from flask import Flask, jsonify, request, send_file
+from num2words import num2words
+from qrcode.constants import ERROR_CORRECT_M
 import zipfile
-from num2words import num2words 
-import locale
 
 if platform.system() == "Windows":
     import pythoncom
@@ -21,10 +26,34 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 PLACEHOLDERS = [
     "ID", "INVOICE_DATE", "CUSTOMER", "PRODUCT", "SUM", "AMOUNT_IN_WORDS",
     "DEAL", "SERVICE", "CITY", "LEAD_SUM", "LEAD_COST", "REVENUE", "PRICE",
-    "EMAIL", "PHONE", "NAME", "INN", "COMPANYNAME"
+    "EMAIL", "PHONE", "NAME", "INN", "COMPANYNAME", "PAYMENT_QR_BASE64",
+    "PAYMENT_QR_PAYLOAD"
 ]
 
 app = Flask(__name__)
+
+DEFAULT_PAYMENT_DETAILS = {
+    "Name": "ИП Абакумова Наталья Александровна",
+    "PersonalAcc": "40802810200006322048",
+    "BankName": "АО «Тинькофф Банк»",
+    "BIC": "044525974",
+    "CorrespAcc": "30101810145250000974",
+    "PayeeINN": "720206359451",
+    "Purpose": "Оплата по счету №{{ID}}"
+}
+
+QR_QUERY_MAP = {
+    "qr_name": "Name",
+    "qr_personal_account": "PersonalAcc",
+    "qr_bank_name": "BankName",
+    "qr_bic": "BIC",
+    "qr_correspondent_account": "CorrespAcc",
+    "qr_inn": "PayeeINN",
+    "qr_kpp": "PayeeKPP",
+    "qr_payer_address": "PayerAddress"
+}
+
+QR_CODE_PLACEHOLDER = "{{QR_CODE}}"
 
 def fill_template_xml(template_path: str, replacements: dict, output_path: str):
     with zipfile.ZipFile(template_path, 'r') as zin:
@@ -67,13 +96,104 @@ def zip_single_file(file_path, arcname):
     buffer.seek(0)
     return buffer
 
-def zip_two_files(file1_path, file2_path, name1, name2):
+def zip_files(file_mappings):
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
-        zf.write(file1_path, arcname=name1)
-        zf.write(file2_path, arcname=name2)
+        for path, arcname in file_mappings:
+            if path and os.path.exists(path):
+                zf.write(path, arcname=arcname)
     buffer.seek(0)
     return buffer
+
+
+def encode_file_to_base64(file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
+
+
+PAYMENT_QR_FIELDS_ORDER = [
+    "Name",
+    "PersonalAcc",
+    "BankName",
+    "BIC",
+    "CorrespAcc",
+    "PayeeINN",
+    "PayeeKPP",
+    "PayerAddress",
+    "Sum",
+    "Purpose",
+]
+
+
+DEFAULT_QR_WIDTH_MM = 40
+
+
+def build_payment_qr_payload(details: dict) -> str:
+    parts = ["ST00012"]
+    used_keys = set()
+
+    for field in PAYMENT_QR_FIELDS_ORDER:
+        value = (details.get(field) or "").strip()
+        if value:
+            parts.append(f"{field}={value}")
+            used_keys.add(field)
+
+    for key, value in details.items():
+        if key in used_keys:
+            continue
+        value = (value or "").strip()
+        if value:
+            parts.append(f"{key}={value}")
+
+    return "|".join(parts)
+
+
+def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
+    payload = build_payment_qr_payload(details)
+    if len(payload) <= len("ST00012"):
+        return "", ""
+
+    qr_path = os.path.join(OUTPUT_DIR, f"{file_id}_qr.png")
+    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_M, box_size=10, border=4)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
+    image.save(qr_path)
+
+    return payload, qr_path
+
+
+def _replace_paragraph_with_image(paragraph, image_path: str, width_mm: float):
+    while paragraph.runs:
+        paragraph._element.remove(paragraph.runs[0]._r)
+    run = paragraph.add_run()
+    run.add_picture(image_path, width=Mm(width_mm))
+
+
+def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_mm: float) -> bool:
+    for paragraph in paragraphs:
+        if placeholder in paragraph.text:
+            paragraph.text = paragraph.text.replace(placeholder, "")
+            _replace_paragraph_with_image(paragraph, image_path, width_mm)
+            return True
+    return False
+
+
+def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
+    document = Document(docx_path)
+
+    if _replace_in_paragraphs(document.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
+        document.save(docx_path)
+        return True
+
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
+                    document.save(docx_path)
+                    return True
+
+    return False
 
 MONTHS_RU = {
     '01': 'января', '02': 'февраля', '03': 'марта',
@@ -81,6 +201,65 @@ MONTHS_RU = {
     '07': 'июля', '08': 'августа', '09': 'сентября',
     '10': 'октября', '11': 'ноября', '12': 'декабря'
 }
+
+
+def parse_sum_to_kopecks(price_str: str) -> str:
+    normalized = (price_str or "").replace(" ", "").replace(",", ".")
+    if not normalized:
+        return ""
+
+    try:
+        amount = float(normalized)
+    except ValueError:
+        return ""
+
+    return str(int(round(amount * 100)))
+
+
+def get_qr_width_mm(args) -> float:
+    value = (args.get("qr_width_mm", "") or "").strip()
+    if not value:
+        return DEFAULT_QR_WIDTH_MM
+
+    try:
+        width = float(value.replace(",", "."))
+        if width <= 0:
+            return DEFAULT_QR_WIDTH_MM
+        return width
+    except ValueError:
+        return DEFAULT_QR_WIDTH_MM
+
+
+def get_payment_details(args, replacements: dict) -> dict:
+    details = DEFAULT_PAYMENT_DETAILS.copy()
+
+    for query_param, payload_key in QR_QUERY_MAP.items():
+        value = (args.get(query_param, "") or "").strip()
+        if value:
+            details[payload_key] = value
+
+    invoice_id = replacements.get("ID", "")
+
+    sum_override = (args.get("qr_sum", "") or "").strip()
+    if sum_override:
+        details["Sum"] = sum_override
+    else:
+        auto_sum = parse_sum_to_kopecks(replacements.get("SUM", ""))
+        if auto_sum:
+            details["Sum"] = auto_sum
+
+    purpose_override = (args.get("qr_purpose", "") or "").strip()
+    if purpose_override:
+        details["Purpose"] = purpose_override
+    else:
+        purpose = details.get("Purpose", "")
+        if purpose and "{{ID}}" in purpose:
+            details["Purpose"] = purpose.replace("{{ID}}", invoice_id)
+        elif not purpose and invoice_id:
+            details["Purpose"] = f"Оплата по счету №{invoice_id}"
+
+    return details
+
 
 def format_invoice_date(date_str):
     try:
@@ -146,21 +325,49 @@ def get_replacements():
         "PHONE": args.get("phone", ""),
         "NAME": args.get("name", ""),
         "INN": args.get("inn", ""),
-        "COMPANYNAME": args.get("companyName", "")
+        "COMPANYNAME": args.get("companyName", ""),
+        "PAYMENT_QR_BASE64": "",
+        "PAYMENT_QR_PAYLOAD": ""
     }
 
 
-def build_doc(replacements: dict):
+def prepare_generation_inputs():
+    replacements = get_replacements()
+    payment_details = get_payment_details(request.args, replacements)
+    qr_width_mm = get_qr_width_mm(request.args)
+    return replacements, payment_details, qr_width_mm
+
+
+def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     file_id = str(uuid.uuid4())
     docx_path = os.path.join(OUTPUT_DIR, f"{file_id}.docx")
-    fill_template_xml(TEMPLATE_PATH, replacements, docx_path)
+
+    replacements_for_template = dict(replacements)
+    qr_payload, qr_path = generate_payment_qr_image(payment_details, file_id)
+
+    if qr_payload and qr_path and os.path.exists(qr_path):
+        try:
+            replacements_for_template["PAYMENT_QR_PAYLOAD"] = qr_payload
+            replacements_for_template["PAYMENT_QR_BASE64"] = encode_file_to_base64(qr_path)
+        except Exception:
+            traceback.print_exc()
+
+    fill_template_xml(TEMPLATE_PATH, replacements_for_template, docx_path)
+
+    if qr_payload and qr_path and os.path.exists(qr_path):
+        try:
+            insert_qr_code_into_document(docx_path, qr_path, qr_width_mm)
+        except Exception:
+            traceback.print_exc()
+
     pdf_path = convert_to_pdf(docx_path, OUTPUT_DIR)
-    return docx_path, pdf_path
+    return docx_path, pdf_path, qr_path
 
 @app.route("/Document/GetPdf")
 def get_pdf():
     try:
-        _, pdf_path = build_doc(get_replacements())
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
         return send_file(pdf_path, download_name="document.pdf", mimetype="application/pdf")
     except Exception as e:
         traceback.print_exc()
@@ -169,7 +376,8 @@ def get_pdf():
 @app.route("/Document/GetDocx")
 def get_docx():
     try:
-        docx_path, _ = build_doc(get_replacements())
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
         return send_file(docx_path, download_name="document.docx", mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     except Exception as e:
         traceback.print_exc()
@@ -178,7 +386,8 @@ def get_docx():
 @app.route("/Document/GetPdfZip")
 def get_pdf_zip():
     try:
-        _, pdf_path = build_doc(get_replacements())
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
         zip_buffer = zip_single_file(pdf_path, "document.pdf")
         return send_file(zip_buffer, download_name="document_pdf.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
@@ -188,7 +397,8 @@ def get_pdf_zip():
 @app.route("/Document/GetDocxZip")
 def get_docx_zip():
     try:
-        docx_path, _ = build_doc(get_replacements())
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
         zip_buffer = zip_single_file(docx_path, "document.docx")
         return send_file(zip_buffer, download_name="document_docx.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
@@ -198,12 +408,47 @@ def get_docx_zip():
 @app.route("/Document/GetAllZip")
 def get_all_zip():
     try:
-        docx_path, pdf_path = build_doc(get_replacements())
-        zip_buffer = zip_two_files(docx_path, pdf_path, "document.docx", "document.pdf")
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        docx_path, pdf_path, qr_path = build_doc(replacements, payment_details, qr_width_mm)
+        file_mappings = [
+            (docx_path, "document.docx"),
+            (pdf_path, "document.pdf"),
+            (qr_path, "payment_qr.png")
+        ]
+        zip_buffer = zip_files(file_mappings)
         return send_file(zip_buffer, download_name="documents_full.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/Document/GetPaymentQr")
+def get_payment_qr():
+    try:
+        replacements = get_replacements()
+        payment_details = get_payment_details(request.args, replacements)
+        qr_payload, qr_path = generate_payment_qr_image(payment_details, str(uuid.uuid4()))
+
+        if not qr_payload or not qr_path or not os.path.exists(qr_path):
+            return jsonify({"error": "Не удалось сформировать QR-код"}), 400
+
+        with open(qr_path, "rb") as qr_file:
+            buffer = BytesIO(qr_file.read())
+        buffer.seek(0)
+
+        response = send_file(buffer, download_name="payment_qr.png", mimetype="image/png")
+        response.headers["X-Payment-QR-Payload"] = qr_payload
+
+        try:
+            os.remove(qr_path)
+        except OSError:
+            pass
+
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=12345, threaded=False)
