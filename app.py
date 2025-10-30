@@ -645,6 +645,8 @@ def get_pdf():
     ---
     tags:
       - Documents
+    produces:
+      - application/pdf
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -686,7 +688,12 @@ def get_pdf():
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
-        return send_file(pdf_path, download_name="document.pdf", mimetype="application/pdf")
+        return send_file(
+            pdf_path,
+            download_name="document.pdf",
+            mimetype="application/pdf",
+            as_attachment=True,
+        )
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -697,6 +704,8 @@ def get_docx():
     ---
     tags:
       - Documents
+    produces:
+      - application/vnd.openxmlformats-officedocument.wordprocessingml.document
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -738,7 +747,12 @@ def get_docx():
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
         docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
-        return send_file(docx_path, download_name="document.docx", mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        return send_file(
+            docx_path,
+            download_name="document.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            as_attachment=True,
+        )
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -749,6 +763,8 @@ def get_pdf_zip():
     ---
     tags:
       - Documents
+    produces:
+      - application/zip
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -802,6 +818,8 @@ def get_docx_zip():
     ---
     tags:
       - Documents
+    produces:
+      - application/zip
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -855,6 +873,8 @@ def get_all_zip():
     ---
     tags:
       - Documents
+    produces:
+      - application/zip
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -914,6 +934,8 @@ def get_payment_qr():
     ---
     tags:
       - QR
+    produces:
+      - image/png
     parameters:
       - $ref: '#/parameters/price'
       - $ref: '#/parameters/price_text'
@@ -944,8 +966,8 @@ def get_payment_qr():
       200:
         description: PNG файл с QR-кодом
         headers:
-          X-Payment-QR-Payload:
-            description: Строковое представление данных QR
+          X-Payment-QR-Payload-Base64:
+            description: Base64-представление строки payload для QR
             schema:
               type: string
         content:
@@ -973,8 +995,14 @@ def get_payment_qr():
             buffer = BytesIO(qr_file.read())
         buffer.seek(0)
 
-        response = send_file(buffer, download_name="payment_qr.png", mimetype="image/png")
-        response.headers["X-Payment-QR-Payload"] = qr_payload
+        response = send_file(
+            buffer,
+            download_name="payment_qr.png",
+            mimetype="image/png",
+            as_attachment=True,
+        )
+        payload_b64 = base64.b64encode(qr_payload.encode("utf-8")).decode("ascii")
+        response.headers["X-Payment-QR-Payload-Base64"] = payload_b64
 
         try:
             os.remove(qr_path)
