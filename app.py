@@ -326,6 +326,13 @@ PAYMENT_QR_FIELDS_ORDER = [
 
 DEFAULT_QR_WIDTH_MM = 35
 
+# Дополнительный запас, который мы оставляем внутри ячейки таблицы при вставке QR.
+# На Linux LibreOffice при конвертации DOCX -> PDF заметно сильнее подрезает
+# изображения, если они вплотную подходят к границам ячейки, поэтому держим
+# небольшой фиксированный и относительный зазоры.
+QR_CELL_MARGIN_MM = 2
+QR_CELL_MARGIN_RATIO = 0.1
+
 
 def build_payment_qr_payload(details: dict) -> str:
     parts = ["ST00012"]
@@ -401,24 +408,45 @@ def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_
     return False
 
 
+def _apply_qr_margin(limit_mm: float) -> float:
+    """Возвращает максимально допустимую ширину с учётом фиксированного и относительного зазоров."""
+    if not limit_mm:
+        return 0
+
+    margin = max(QR_CELL_MARGIN_MM, limit_mm * QR_CELL_MARGIN_RATIO)
+    return max(limit_mm - margin, 5)
+
+
 def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
-    """Return width that fits into the table cell/row with a small margin."""
+    """Return width that fits into the table cell/row with a safe margin for PDF export."""
     limits = []
 
     row_height = getattr(row.height, "mm", None)
     if row_height:
-        limits.append(row_height)
+        limits.append(_apply_qr_margin(row_height))
 
-    cell_width = getattr(cell.width, "mm", None)
-    if cell_width:
-        limits.append(cell_width)
+    cell_width_attr = getattr(cell, "width", None)
+    cell_width_mm = getattr(cell_width_attr, "mm", None) if cell_width_attr else None
+    if cell_width_mm:
+        limits.append(_apply_qr_margin(cell_width_mm))
+
+    # Иногда python-docx не устанавливает ширину ячейки, но задаёт её в tcW (twips).
+    if not limits:
+        tc_pr = getattr(getattr(cell, "_tc", None), "tcPr", None)
+        tc_w = getattr(tc_pr, "tcW", None) if tc_pr is not None else None
+        width_twips = getattr(tc_w, "w", None) if tc_w is not None else None
+        try:
+            width_twips_int = int(width_twips) if width_twips is not None else None
+        except (TypeError, ValueError):
+            width_twips_int = None
+        if width_twips_int:
+            width_mm = width_twips_int * 25.4 / 1440
+            limits.append(_apply_qr_margin(width_mm))
 
     if not limits:
-        return width_mm
+        return min(width_mm, DEFAULT_QR_WIDTH_MM)
 
-    # Оставляем небольшой зазор в 2 мм, чтобы LibreOffice не "резал" картинку по границе
     safe_limit = min(limit for limit in limits if limit)
-    safe_limit = max(safe_limit - 2, 5)  # не уменьшаем меньше 5 мм
     return min(width_mm, safe_limit)
 
 
