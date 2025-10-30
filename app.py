@@ -333,6 +333,12 @@ DEFAULT_QR_WIDTH_MM = 35
 QR_CELL_MARGIN_MM = 2
 QR_CELL_MARGIN_RATIO = 0.1
 
+# На Linux при конвертации в PDF LibreOffice иногда обрезает саму картинку даже при
+# соблюдении отступов в таблице, если у PNG слишком тонкая белая рамка. Поэтому мы
+# принудительно добавляем запас вокруг QR-кода при сохранении файла.
+QR_IMAGE_PADDING_PX = 24
+QR_IMAGE_PADDING_RATIO = 0.12
+
 
 def build_payment_qr_payload(details: dict) -> str:
     parts = ["ST00012"]
@@ -388,6 +394,7 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     if not hasattr(pil_image, "save"):
         raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
     pil_image.save(qr_path, format="PNG")
+    _ensure_qr_image_padding(qr_path)
 
     return payload, qr_path
 
@@ -406,6 +413,27 @@ def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_
             _replace_paragraph_with_image(paragraph, image_path, width_mm)
             return True
     return False
+
+
+def _ensure_qr_image_padding(image_path: str) -> None:
+    """Добавляет белую рамку вокруг QR-кода, чтобы избежать обрезания при экспорте."""
+    if Image is None:
+        return
+
+    try:
+        with Image.open(image_path) as img:
+            qr_image = img.convert("RGB")
+            min_side = min(qr_image.size)
+            padding = max(int(min_side * QR_IMAGE_PADDING_RATIO), QR_IMAGE_PADDING_PX)
+            if padding <= 0:
+                return
+
+            new_size = (qr_image.width + padding * 2, qr_image.height + padding * 2)
+            padded = Image.new("RGB", new_size, "white")
+            padded.paste(qr_image, (padding, padding))
+            padded.save(image_path, format="PNG")
+    except Exception:
+        traceback.print_exc()
 
 
 def _apply_qr_margin(limit_mm: float) -> float:
