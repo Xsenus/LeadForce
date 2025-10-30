@@ -16,14 +16,14 @@ jobs:
       BASE_DIR: /srv/leadforce
       TARGET_DIR: /srv/leadforce/app
       SERVICE_NAME: leadforce
-      SERVICE_USER: leadforce
+      SERVICE_USER: leadforce # <-- поставь root, если хочешь выполнять всё под root
       REPO_SSH: git@github.com:${{ github.repository }}.git
 
     steps:
       - name: Checkout (meta only)
         uses: actions/checkout@v4
 
-      - name: Prepare VPS (git, venv, user, ssh known_hosts)
+      - name: Prepare VPS (packages, user, venv, ssh known_hosts)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -52,7 +52,7 @@ jobs:
             sudo chown -R '${{ env.SERVICE_USER }}':'${{ env.SERVICE_USER }}' '${{ env.BASE_DIR }}'
             sudo chmod -R u=rwX,g=rX,o= '${{ env.BASE_DIR }}'
 
-            # ~/.ssh для leadforce
+            # ~/.ssh для SERVICE_USER
             sudo mkdir -p '${{ env.BASE_DIR }}/.ssh'
             sudo chown '${{ env.SERVICE_USER }}':'${{ env.SERVICE_USER }}' '${{ env.BASE_DIR }}/.ssh'
             sudo chmod 700 '${{ env.BASE_DIR }}/.ssh'
@@ -62,7 +62,7 @@ jobs:
             sudo chown '${{ env.SERVICE_USER }}':'${{ env.SERVICE_USER }}' '${{ env.BASE_DIR }}/.ssh/known_hosts'
             sudo chmod 600 '${{ env.BASE_DIR }}/.ssh/known_hosts'
 
-            # Проверяем deploy-key
+            # Deploy key должен существовать (private) и быть читаем SERVICE_USER
             if [ ! -f '${{ env.BASE_DIR }}/.ssh/github_deploy' ]; then
               echo 'Deploy key not found: ${{ env.BASE_DIR }}/.ssh/github_deploy'
               echo 'Create on VPS: sudo -u ${{ env.SERVICE_USER }} ssh-keygen -t ed25519 -N "" -f ${{ env.BASE_DIR }}/.ssh/github_deploy'
@@ -86,25 +86,26 @@ jobs:
             APP_DIR='${{ env.TARGET_DIR }}'
             VENV_BIN='${{ env.BASE_DIR }}/venv/bin'
 
-            # 1) Настроим для leadforce sshCommand для git (без /usr/bin/env)
+            # 1) Один раз: git будет всегда использовать нужный ключ
             sudo -H -u '${{ env.SERVICE_USER }}' git config --global core.sshCommand \
               'ssh -i /srv/leadforce/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-            # 2) Клонирование/обновление репозитория
+            # 2) Клон либо обновление
             if [ ! -d "$APP_DIR/.git" ]; then
               sudo -H -u '${{ env.SERVICE_USER }}' git clone --depth=1 '${{ env.REPO_SSH }}' "$APP_DIR"
             else
+              # ВАЖНО: насильно перевести origin на SSH (если раньше был https)
+              sudo -H -u '${{ env.SERVICE_USER }}' git -C "$APP_DIR" remote set-url origin '${{ env.REPO_SSH }}'
               sudo -H -u '${{ env.SERVICE_USER }}' git -C "$APP_DIR" fetch --prune
               sudo -H -u '${{ env.SERVICE_USER }}' git -C "$APP_DIR" reset --hard origin/main
               sudo -H -u '${{ env.SERVICE_USER }}' git -C "$APP_DIR" clean -fdx
             fi
 
             # 3) Python deps
-            # (на случай отсутствия pip внутри venv)
             '${{ env.BASE_DIR }}/venv/bin/python' -m ensurepip --upgrade || true
-            sudo -H -u '${{ env.SERVICE_USER }}' '$VENV_BIN/pip' install --upgrade pip wheel setuptools
+            sudo -H -u '${{ env.SERVICE_USER }}' ${VENV_BIN}/pip install --upgrade pip wheel setuptools
             if [ -f "$APP_DIR/requirements.txt" ]; then
-              sudo -H -u '${{ env.SERVICE_USER }}' '$VENV_BIN/pip' install -r "$APP_DIR/requirements.txt"
+              sudo -H -u '${{ env.SERVICE_USER }}' ${VENV_BIN}/pip install -r "$APP_DIR/requirements.txt"
             fi
 
             # 4) Рестарт сервиса
@@ -122,5 +123,4 @@ jobs:
           script: |
             set -euo pipefail
             sudo systemctl status '${{ env.SERVICE_NAME }}' --no-pager -l || true
-            # если gunicorn слушает 12345:
             curl -sf -m 5 http://127.0.0.1:12345/ >/dev/null && echo 'OK' || (echo 'Healthcheck failed' && exit 1)
