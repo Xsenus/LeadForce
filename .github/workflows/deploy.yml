@@ -33,9 +33,9 @@ jobs:
           fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
-            # Packages
+            # Packages (ssh-keyscan в openssh-client)
             sudo apt-get update -y
-            sudo apt-get install -y git python3 python3-venv
+            sudo apt-get install -y git python3 python3-venv openssh-client
 
             # Ensure service user and home
             if ! id "${{ env.SERVICE_USER }}" >/dev/null 2>&1; then
@@ -51,14 +51,15 @@ jobs:
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
             sudo chmod -R u=rwX,g=rX,o= "${{ env.BASE_DIR }}"
 
-            # ~/.ssh для leadforce (БЕЗ /usr/bin/install)
+            # ~/.ssh для leadforce
             sudo mkdir -p "${{ env.BASE_DIR }}/.ssh"
             sudo chown "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh"
             sudo chmod 700 "${{ env.BASE_DIR }}/.ssh"
 
-            # known_hosts под leadforce
-            sudo -u "${{ env.SERVICE_USER }}" bash -lc 'ssh-keyscan github.com >> ~/.ssh/known_hosts || true'
-            sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/known_hosts"
+            # known_hosts (БЕЗ sudo -u ... bash)
+            ssh-keyscan github.com | sudo tee -a "${{ env.BASE_DIR }}/.ssh/known_hosts" >/dev/null || true
+            sudo chown "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh/known_hosts"
+            sudo chmod 600 "${{ env.BASE_DIR }}/.ssh/known_hosts"
 
             # Проверяем deploy-key
             if [ ! -f "${{ env.BASE_DIR }}/.ssh/github_deploy" ]; then
@@ -67,8 +68,9 @@ jobs:
               echo "Then add PUBLIC key (.pub) to GitHub → Settings → Deploy keys."
               exit 1
             fi
-            sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/github_deploy"
-            sudo -u "${{ env.SERVICE_USER }}" chmod 644 "${{ env.BASE_DIR }}/.ssh/github_deploy.pub"
+            sudo chown "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh/github_deploy" "${{ env.BASE_DIR }}/.ssh/github_deploy.pub"
+            sudo chmod 600 "${{ env.BASE_DIR }}/.ssh/github_deploy"
+            sudo chmod 644 "${{ env.BASE_DIR }}/.ssh/github_deploy.pub"
 
       - name: Pull & install on VPS (no SCP)
         uses: appleboy/ssh-action@v1.0.3
@@ -82,19 +84,23 @@ jobs:
             set -euo pipefail
             APP_DIR="${{ env.TARGET_DIR }}"
             VENV_BIN="${{ env.BASE_DIR }}/venv/bin"
-            GIT_SSH_CMD='ssh -i /srv/leadforce/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
+            export GIT_SSH_COMMAND='ssh -i /srv/leadforce/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-            # Clone or update
+            # Clone or update (БЕЗ bash -lc; используем git -C)
             if [ ! -d "$APP_DIR/.git" ]; then
-              sudo -u "${{ env.SERVICE_USER }}" bash -lc "GIT_SSH_COMMAND='$GIT_SSH_CMD' git clone --depth=1 '${{ env.REPO_SSH }}' '$APP_DIR'"
+              sudo -H -u "${{ env.SERVICE_USER }}" env GIT_SSH_COMMAND="$GIT_SSH_COMMAND" \
+                git clone --depth=1 '${{ env.REPO_SSH }}' "$APP_DIR"
             else
-              sudo -u "${{ env.SERVICE_USER }}" bash -lc "cd '$APP_DIR' && GIT_SSH_COMMAND='$GIT_SSH_CMD' git fetch --prune && git reset --hard origin/main && git clean -fdx"
+              sudo -H -u "${{ env.SERVICE_USER }}" env GIT_SSH_COMMAND="$GIT_SSH_COMMAND" \
+                git -C "$APP_DIR" fetch --prune
+              sudo -H -u "${{ env.SERVICE_USER }}" git -C "$APP_DIR" reset --hard origin/main
+              sudo -H -u "${{ env.SERVICE_USER }}" git -C "$APP_DIR" clean -fdx
             fi
 
             # Python deps
-            sudo -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install --upgrade pip wheel setuptools
+            sudo -H -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install --upgrade pip wheel setuptools
             if [ -f "$APP_DIR/requirements.txt" ]; then
-              sudo -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install -r "$APP_DIR/requirements.txt"
+              sudo -H -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install -r "$APP_DIR/requirements.txt"
             fi
 
             # Restart service
