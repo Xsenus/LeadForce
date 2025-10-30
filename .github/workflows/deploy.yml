@@ -51,15 +51,20 @@ jobs:
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
             sudo chmod -R u=rwX,g=rX,o= "${{ env.BASE_DIR }}"
 
-            # SSH known_hosts for github.com (under leadforce)
-            sudo -u "${{ env.SERVICE_USER }}" install -d -m 700 -o "${{ env.SERVICE_USER }}" -g "${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh"
+            # ~/.ssh для leadforce (БЕЗ /usr/bin/install)
+            sudo mkdir -p "${{ env.BASE_DIR }}/.ssh"
+            sudo chown "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh"
+            sudo chmod 700 "${{ env.BASE_DIR }}/.ssh"
+
+            # known_hosts под leadforce
             sudo -u "${{ env.SERVICE_USER }}" bash -lc 'ssh-keyscan github.com >> ~/.ssh/known_hosts || true'
             sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/known_hosts"
 
-            # Require deploy key to exist
+            # Проверяем deploy-key
             if [ ! -f "${{ env.BASE_DIR }}/.ssh/github_deploy" ]; then
               echo "Deploy key not found: ${{ env.BASE_DIR }}/.ssh/github_deploy"
-              echo "Create it and add *public* part to GitHub: Settings → Deploy keys."
+              echo "Create on VPS: sudo -u ${{ env.SERVICE_USER }} ssh-keygen -t ed25519 -N \"\" -f ${{ env.BASE_DIR }}/.ssh/github_deploy"
+              echo "Then add PUBLIC key (.pub) to GitHub → Settings → Deploy keys."
               exit 1
             fi
             sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/github_deploy"
@@ -107,5 +112,4 @@ jobs:
           script: |
             set -euo pipefail
             sudo systemctl status "${{ env.SERVICE_NAME }}" --no-pager -l || true
-            # если gunicorn слушает 12345:
             curl -sf -m 5 http://127.0.0.1:12345/ >/dev/null && echo "OK" || (echo "Healthcheck failed" && exit 1)
