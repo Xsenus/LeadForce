@@ -6,6 +6,10 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: deploy-leadforce
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -19,43 +23,68 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Подготовка пользователя/папок/venv на VPS
       - name: Prepare VPS directories
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          port: ${{ secrets.VPS_PORT }}
           script: |
             set -euo pipefail
-            sudo useradd -r -m -d "$BASE_DIR" -s /usr/sbin/nologin "$SERVICE_USER" 2>/dev/null || true
-            sudo mkdir -p "$BASE_DIR" "$TARGET_DIR" "$BASE_DIR/logs" "$BASE_DIR/run"
-            sudo python3 -m venv "$BASE_DIR/venv" || true
-            sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$BASE_DIR"
-            sudo chmod -R u=rwX,g=rX,o= "$BASE_DIR"
-            sudo touch "$BASE_DIR/logs/gunicorn.access.log" "$BASE_DIR/logs/gunicorn.error.log"
-            sudo chown -R "$SERVICE_USER":"$SERVICE_USER" "$BASE_DIR/logs"
+            # Пакеты (venv может отсутствовать)
+            if ! command -v python3 >/dev/null 2>&1; then
+              sudo apt-get update -y
+              sudo apt-get install -y python3
+            fi
+            sudo apt-get update -y
+            sudo apt-get install -y python3-venv
 
+            # Пользователь + оболочка
+            if ! id "${{ env.SERVICE_USER }}" >/dev/null 2>&1; then
+              sudo useradd -m -d "${{ env.BASE_DIR }}" -s /bin/bash "${{ env.SERVICE_USER }}"
+            else
+              sudo usermod -d "${{ env.BASE_DIR }}" "${{ env.SERVICE_USER }}"
+              sudo chsh -s /bin/bash "${{ env.SERVICE_USER }}"
+            fi
+
+            # Каталоги и права
+            sudo mkdir -p "${{ env.BASE_DIR }}" "${{ env.TARGET_DIR }}" "${{ env.BASE_DIR }}/logs" "${{ env.BASE_DIR }}/run"
+            sudo python3 -m venv "${{ env.BASE_DIR }}/venv" || true
+            sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
+            sudo chmod -R u=rwX,g=rX,o= "${{ env.BASE_DIR }}"
+            sudo touch "${{ env.BASE_DIR }}/logs/gunicorn.access.log" "${{ env.BASE_DIR }}/logs/gunicorn.error.log"
+            sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/logs"
+
+      # Копирование проекта на VPS
       - name: Copy project to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          port: ${{ secrets.VPS_PORT }}
           source: .
           target: ${{ env.TARGET_DIR }}
           strip_components: 0
           rm: true
 
+      # Запуск удалённого деплой-скрипта из репозитория
       - name: Run remote deploy script
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
+          port: ${{ secrets.VPS_PORT }}
           script: |
-            cd "$TARGET_DIR"
+            set -euo pipefail
+            cd "${{ env.TARGET_DIR }}"
             chmod +x scripts/deploy.sh
-            BASE_DIR="$BASE_DIR" APP_DIR="$TARGET_DIR" SERVICE_NAME="$SERVICE_NAME" SERVICE_USER="$SERVICE_USER" SERVICE_GROUP="$SERVICE_USER" bash scripts/deploy.sh
+            BASE_DIR="${{ env.BASE_DIR }}" \
+            APP_DIR="${{ env.TARGET_DIR }}" \
+            SERVICE_NAME="${{ env.SERVICE_NAME }}" \
+            SERVICE_USER="${{ env.SERVICE_USER }}" \
+            SERVICE_GROUP="${{ env.SERVICE_USER }}" \
+            bash scripts/deploy.sh
