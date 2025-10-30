@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from io import BytesIO
 
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 from docx import Document
 from docx.shared import Mm
@@ -15,16 +15,16 @@ from flask import Flask, jsonify, request, send_file
 from num2words import num2words
 
 try:
-    import qrcode  # type: ignore
-    from qrcode.constants import ERROR_CORRECT_M  # type: ignore
+    import qrcode  # type: ignore[import-not-found]
+    from qrcode.constants import ERROR_CORRECT_M  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - handled at runtime
-    qrcode = None  # type: ignore
-    ERROR_CORRECT_M = None  # type: ignore
+    qrcode = None  # type: ignore[assignment]
+    ERROR_CORRECT_M = None  # type: ignore[assignment]
 
 try:
-    from PIL import Image  # type: ignore
+    from PIL import Image  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - handled at runtime
-    Image = None  # type: ignore
+    Image = None  # type: ignore[assignment]
 import zipfile
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
@@ -183,12 +183,16 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
         return "", ""
 
     qr_path = os.path.join(OUTPUT_DIR, f"{file_id}_qr.png")
-    qr = qrcode.QRCode(error_correction=ERROR_CORRECT_M, box_size=10, border=4)
+    qr_module = cast(Any, qrcode)
+    error_correction = cast(int, ERROR_CORRECT_M)
+    qr = qr_module.QRCode(error_correction=error_correction, box_size=10, border=4)
     qr.add_data(payload)
     qr.make(fit=True)
     qr_image = qr.make_image(fill_color="black", back_color="white")
     pil_image = qr_image.get_image() if hasattr(qr_image, "get_image") else qr_image
-    cast(Image.Image, pil_image).save(qr_path, format="PNG")
+    if not hasattr(pil_image, "save"):
+        raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
+    pil_image.save(qr_path, format="PNG")
 
     return payload, qr_path
 
