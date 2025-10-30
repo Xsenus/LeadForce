@@ -810,6 +810,53 @@ def _rescale_png_to_mm(image_path: str, width_mm: float, dpi: int = 300):
     except Exception:
         traceback.print_exc()
 
+
+def replace_placeholders_in_docx(docx_path: str, replacements: dict) -> None:
+    doc = Document(docx_path)
+
+    def replace_in_paragraph(paragraph):
+        if not paragraph.runs:
+            return
+        text = "".join(run.text or "" for run in paragraph.runs)
+        changed = False
+        for k, v in replacements.items():
+            ph = f"{{{{{k}}}}}"
+            if ph in text:
+                text = text.replace(ph, str(v or ""))
+                changed = True
+        if changed:
+            # очищаем все run-ы и записываем один текстом целиком (формат абзаца сохранится)
+            for r in paragraph.runs:
+                r.text = ""
+            paragraph.runs[0].text = text
+
+    # Тело документа
+    for p in doc.paragraphs:
+        replace_in_paragraph(p)
+
+    # Таблицы (включая вложенные)
+    def walk_tables(tables):
+        for t in tables:
+            for row in t.rows:
+                for cell in row.cells:
+                    for p in cell.paragraphs:
+                        replace_in_paragraph(p)
+                    if cell.tables:
+                        walk_tables(cell.tables)
+    walk_tables(doc.tables)
+
+    # Хедеры/футеры (на всякий)
+    for sec in doc.sections:
+        for p in sec.header.paragraphs:
+            replace_in_paragraph(p)
+        walk_tables(sec.header.tables)
+        for p in sec.footer.paragraphs:
+            replace_in_paragraph(p)
+        walk_tables(sec.footer.tables)
+
+    doc.save(docx_path)
+
+
 def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     file_id = str(uuid.uuid4())
     docx_path = os.path.join(OUTPUT_DIR, f"{file_id}.docx")
@@ -833,6 +880,11 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
             traceback.print_exc()
 
     fill_template_xml(TEMPLATE_PATH, replacements_for_template, docx_path)
+
+    try:
+        replace_placeholders_in_docx(docx_path, replacements_for_template)
+    except Exception:
+        traceback.print_exc()
 
     if qr_payload and qr_path and os.path.exists(qr_path):
         try:
