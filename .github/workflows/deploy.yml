@@ -17,13 +17,13 @@ jobs:
       TARGET_DIR: /srv/leadforce/app
       SERVICE_NAME: leadforce
       SERVICE_USER: leadforce
+      REPO_SSH: git@github.com:${{ github.repository }}.git
 
     steps:
-      - name: Checkout repository
+      - name: Checkout (meta only)
         uses: actions/checkout@v4
 
-      # Подготовка VPS: пользователь, каталоги, venv, утилиты
-      - name: Prepare VPS directories
+      - name: Prepare VPS (git, venv, user, ssh known_hosts)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -33,11 +33,11 @@ jobs:
           fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
-            # Пакеты
+            # Packages
             sudo apt-get update -y
-            sudo apt-get install -y python3 python3-venv zstd
+            sudo apt-get install -y git python3 python3-venv
 
-            # Пользователь + оболочка
+            # Ensure service user and home
             if ! id "${{ env.SERVICE_USER }}" >/dev/null 2>&1; then
               sudo useradd -m -d "${{ env.BASE_DIR }}" -s /bin/bash "${{ env.SERVICE_USER }}"
             else
@@ -45,53 +45,27 @@ jobs:
               sudo chsh -s /bin/bash "${{ env.SERVICE_USER }}"
             fi
 
-            # Каталоги и права
+            # Dirs & venv
             sudo mkdir -p "${{ env.BASE_DIR }}" "${{ env.TARGET_DIR }}" "${{ env.BASE_DIR }}/logs" "${{ env.BASE_DIR }}/run"
             sudo python3 -m venv "${{ env.BASE_DIR }}/venv" || true
             sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}"
             sudo chmod -R u=rwX,g=rX,o= "${{ env.BASE_DIR }}"
-            sudo touch "${{ env.BASE_DIR }}/logs/gunicorn.access.log" "${{ env.BASE_DIR }}/logs/gunicorn.error.log"
-            sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/logs"
 
-      # Сборка лёгкого архива деплоя (Zstandard)
-      - name: Build deploy archive (zstd)
-        run: |
-          set -euo pipefail
-          mkdir -p output && touch output/.gitkeep || true
-          tar -I 'zstd -3' -cf deploy.tar.zst \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='node_modules' \
-            --exclude='venv' \
-            --exclude='__pycache__' \
-            --exclude='.pytest_cache' \
-            --exclude='.mypy_cache' \
-            --exclude='output/*' \
-            app.py \
-            requirements.txt \
-            Templates \
-            scripts
-          ls -lh deploy.tar.zst
+            # SSH known_hosts for github.com (under leadforce)
+            sudo -u "${{ env.SERVICE_USER }}" install -d -m 700 -o "${{ env.SERVICE_USER }}" -g "${{ env.SERVICE_USER }}" "${{ env.BASE_DIR }}/.ssh"
+            sudo -u "${{ env.SERVICE_USER }}" bash -lc 'ssh-keyscan github.com >> ~/.ssh/known_hosts || true'
+            sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/known_hosts"
 
-      # Быстрая загрузка одного файла
-      - name: Upload deploy.tar.zst to VPS
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT }}
-          fingerprint: ${{ secrets.VPS_FINGERPRINT }}
-          source: deploy.tar.zst
-          target: /tmp/
-          overwrite: true
-          debug: true
-          timeout: 600s # единицы обязательны
-          command_timeout: 600s # единицы обязательны
-          cipher: aes128-gcm@openssh.com
+            # Require deploy key to exist
+            if [ ! -f "${{ env.BASE_DIR }}/.ssh/github_deploy" ]; then
+              echo "Deploy key not found: ${{ env.BASE_DIR }}/.ssh/github_deploy"
+              echo "Create it and add *public* part to GitHub: Settings → Deploy keys."
+              exit 1
+            fi
+            sudo -u "${{ env.SERVICE_USER }}" chmod 600 "${{ env.BASE_DIR }}/.ssh/github_deploy"
+            sudo -u "${{ env.SERVICE_USER }}" chmod 644 "${{ env.BASE_DIR }}/.ssh/github_deploy.pub"
 
-      # Распаковка на сервере
-      - name: Unpack on VPS (zstd)
+      - name: Pull & install on VPS (no SCP)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -101,13 +75,28 @@ jobs:
           fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
-            sudo mkdir -p "${{ env.TARGET_DIR }}"
-            sudo tar -I zstd -xf /tmp/deploy.tar.zst -C "${{ env.TARGET_DIR }}"
-            sudo chown -R "${{ env.SERVICE_USER }}":"${{ env.SERVICE_USER }}" "${{ env.TARGET_DIR }}"
-            sudo rm -f /tmp/deploy.tar.zst
+            APP_DIR="${{ env.TARGET_DIR }}"
+            VENV_BIN="${{ env.BASE_DIR }}/venv/bin"
+            GIT_SSH_CMD='ssh -i /srv/leadforce/.ssh/github_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes'
 
-      # Запуск твоего деплой-скрипта
-      - name: Run remote deploy script
+            # Clone or update
+            if [ ! -d "$APP_DIR/.git" ]; then
+              sudo -u "${{ env.SERVICE_USER }}" bash -lc "GIT_SSH_COMMAND='$GIT_SSH_CMD' git clone --depth=1 '${{ env.REPO_SSH }}' '$APP_DIR'"
+            else
+              sudo -u "${{ env.SERVICE_USER }}" bash -lc "cd '$APP_DIR' && GIT_SSH_COMMAND='$GIT_SSH_CMD' git fetch --prune && git reset --hard origin/main && git clean -fdx"
+            fi
+
+            # Python deps
+            sudo -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install --upgrade pip wheel setuptools
+            if [ -f "$APP_DIR/requirements.txt" ]; then
+              sudo -u "${{ env.SERVICE_USER }}" "$VENV_BIN/pip" install -r "$APP_DIR/requirements.txt"
+            fi
+
+            # Restart service
+            sudo systemctl daemon-reload || true
+            sudo systemctl restart "${{ env.SERVICE_NAME }}"
+
+      - name: Healthcheck (local)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.VPS_HOST }}
@@ -117,11 +106,6 @@ jobs:
           fingerprint: ${{ secrets.VPS_FINGERPRINT }}
           script: |
             set -euo pipefail
-            cd "${{ env.TARGET_DIR }}"
-            chmod +x scripts/deploy.sh
-            BASE_DIR="${{ env.BASE_DIR }}" \
-            APP_DIR="${{ env.TARGET_DIR }}" \
-            SERVICE_NAME="${{ env.SERVICE_NAME }}" \
-            SERVICE_USER="${{ env.SERVICE_USER }}" \
-            SERVICE_GROUP="${{ env.SERVICE_USER }}" \
-            bash scripts/deploy.sh
+            sudo systemctl status "${{ env.SERVICE_NAME }}" --no-pager -l || true
+            # если gunicorn слушает 12345:
+            curl -sf -m 5 http://127.0.0.1:12345/ >/dev/null && echo "OK" || (echo "Healthcheck failed" && exit 1)
