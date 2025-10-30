@@ -277,6 +277,8 @@ QR_CODE_PLACEHOLDER = "{{QR_CODE}}"
 from xml.sax.saxutils import escape
 
 def fill_template_xml(template_path: str, replacements: dict, output_path: str):
+    """Создаёт копию DOCX-шаблона с заменой плейсхолдеров внутри XML."""
+
     with zipfile.ZipFile(template_path, 'r') as zin:
         with zipfile.ZipFile(output_path, 'w') as zout:
             for item in zin.infolist():
@@ -289,7 +291,10 @@ def fill_template_xml(template_path: str, replacements: dict, output_path: str):
                     data = xml.encode('utf-8')
                 zout.writestr(item, data)
 
+
 def convert_to_pdf(input_docx: str, output_dir: str):
+    """Конвертирует DOCX в PDF, используя Word на Windows или LibreOffice на *nix."""
+
     if platform.system() == "Windows":
         import pythoncom  # type: ignore
         import win32com.client  # type: ignore
@@ -314,14 +319,20 @@ def convert_to_pdf(input_docx: str, output_dir: str):
         ], check=True)
         return os.path.splitext(input_docx)[0] + ".pdf"
 
+
 def zip_single_file(file_path, arcname):
+    """Создаёт архив в памяти с единственным файлом."""
+
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         zf.write(file_path, arcname=arcname)
     buffer.seek(0)
     return buffer
 
+
 def zip_files(file_mappings):
+    """Архивирует несколько файлов, пропуская отсутствующие пути."""
+
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
         for path, arcname in file_mappings:
@@ -332,6 +343,8 @@ def zip_files(file_mappings):
 
 
 def encode_file_to_base64(file_path: str) -> str:
+    """Возвращает содержимое файла в виде base64-строки."""
+
     with open(file_path, "rb") as f:
         return base64.b64encode(f.read()).decode("ascii")
 
@@ -369,6 +382,8 @@ QR_IMAGE_PADDING_RATIO = 0.0
 
 
 def build_payment_qr_payload(details: dict) -> str:
+    """Формирует строку payload для СБП, учитывая фиксированный порядок полей."""
+
     parts = ["ST00012"]
     used_keys = set()
 
@@ -389,6 +404,8 @@ def build_payment_qr_payload(details: dict) -> str:
 
 
 def _require_qr_dependencies() -> Optional[str]:
+    """Возвращает строку с недостающими модулями для генерации QR или None."""
+
     missing = []
     if qrcode is None:
         missing.append("qrcode")
@@ -397,9 +414,9 @@ def _require_qr_dependencies() -> Optional[str]:
     if missing:
         return ", ".join(missing)
     return None
-
-
 def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
+    """Генерирует PNG с QR-кодом и возвращает payload вместе с путём к файлу."""
+
     missing = _require_qr_dependencies()
     if missing:
         raise RuntimeError(
@@ -421,13 +438,12 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     pil_image = qr_image.get_image() if hasattr(qr_image, "get_image") else qr_image
     if not hasattr(pil_image, "save"):
         raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
-    # Даем явный DPI
     pil_image.save(qr_path, format="PNG", dpi=(300, 300))
-
-    # _ensure_qr_image_padding(qr_path)
     return payload, qr_path
 
 def _zero_paragraph_spacing(paragraph):
+    """Сбрасывает отступы и настройки переноса абзаца."""
+
     pf = paragraph.paragraph_format
     pf.space_before = Pt(0)
     pf.space_after = Pt(0)
@@ -441,15 +457,12 @@ def _set_cell_margins(cell, top=40, bottom=40, left=40, right=40):
     40 twips ≈ 0.7 мм — хватает, чтобы LibreOffice не "съедал" верхние пиксели.
     """
     tcPr = cell._tc.get_or_add_tcPr()
-
-    # <w:tcMar>
     tcMar = tcPr.find(qn('w:tcMar'))
     if tcMar is None:
         tcMar = OxmlElement('w:tcMar')
         tcPr.append(tcMar)
 
     def _ensure_side(name: str, val: int):
-        # Пытаемся найти существующий элемент (w:top, w:bottom, w:left, w:right, а также w:start/w:end)
         el = tcMar.find(qn(f'w:{name}'))
         if el is None:
             el = OxmlElement(f'w:{name}')
@@ -457,19 +470,23 @@ def _set_cell_margins(cell, top=40, bottom=40, left=40, right=40):
         el.set(qn('w:w'), str(int(val)))
         el.set(qn('w:type'), 'dxa')
 
-    # Для совместимости с различными версиями Word/LO зададим и left/right, и start/end
     for side, val in (('top', top), ('bottom', bottom), ('left', left), ('right', right),
                       ('start', left), ('end', right)):
         _ensure_side(side, val)
 
 def _replace_paragraph_with_image(paragraph, image_path: str, width_mm: float):
+    """Очищает параграф и вставляет изображение заданной ширины вместо текста."""
+
     while paragraph.runs:
         paragraph._element.remove(paragraph.runs[0]._r)
     _zero_paragraph_spacing(paragraph)
     run = paragraph.add_run()
     run.add_picture(image_path, width=Mm(width_mm))
 
+
 def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_mm: float) -> bool:
+    """Заменяет плейсхолдер на изображение и сообщает об успешной вставке."""
+
     for paragraph in paragraphs:
         if placeholder in paragraph.text:
             paragraph.text = paragraph.text.replace(placeholder, "")
@@ -546,6 +563,8 @@ def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
 
 
 def _paragraph_has_placeholder(paragraph) -> bool:
+    """Возвращает True, если параграф содержит маркер вставки QR-кода."""
+
     if QR_CODE_PLACEHOLDER in getattr(paragraph, "text", ""):
         return True
 
@@ -556,18 +575,15 @@ def _paragraph_has_placeholder(paragraph) -> bool:
 
 
 def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
-    """
-    Ограничиваем только шириной ячейки. Высота строки здесь не учитывается.
-    """
+    """Ограничивает ширину изображения значением, допустимым для ячейки."""
+
     limits = []
 
-    # 1) Пробуем width из объектной модели
     cell_width_attr = getattr(cell, "width", None)
     cell_width_mm = getattr(cell_width_attr, "mm", None) if cell_width_attr else None
     if cell_width_mm:
         limits.append(_apply_qr_margin(cell_width_mm))
 
-    # 2) Если python-docx ширину не знает — читаем tcPr/tcW (twips)
     if not limits:
         tc_pr = getattr(getattr(cell, "_tc", None), "tcPr", None)
         tc_w = getattr(tc_pr, "tcW", None) if tc_pr is not None else None
@@ -580,7 +596,6 @@ def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
             width_mm_from_twips = width_twips_int * 25.4 / 1440
             limits.append(_apply_qr_margin(width_mm_from_twips))
 
-    # Если совсем ничего не нашли — не режем, оставляем запрошенную ширину
     if not limits:
         return width_mm
 
@@ -588,8 +603,10 @@ def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
     return min(width_mm, safe_limit)
 
 def _ensure_table_fixed_layout(cell) -> None:
-    tr = cell._tc.getparent()          # CT_Row
-    tbl = tr.getparent()               # CT_Tbl
+    """Включает фиксированную ширину колонок для таблицы, содержащей ячейку."""
+
+    tr = cell._tc.getparent()
+    tbl = tr.getparent()
     tblPr = tbl.tblPr
     if tblPr is None:
         tblPr = OxmlElement('w:tblPr')
@@ -601,22 +618,20 @@ def _ensure_table_fixed_layout(cell) -> None:
     tblLayout.set(qn('w:type'), 'fixed')
 
 def _ensure_gridcol_min_width(cell, min_width_mm: float) -> None:
-    """Задаём минимум ширины именно колонке через <w:tblGrid>/<w:gridCol>."""
+    """Задаёт минимальную ширину столбца через элементы <w:tblGrid>/<w:gridCol>."""
+
     twips = int(round(min_width_mm * 1440 / 25.4))
     tr = cell._tc.getparent()
     tbl = tr.getparent()
 
-    # индекс ячейки в строке
-    tcs = [tc for tc in tr.iterchildren() if tc.tag == qn('w:tc')]
-    col_idx = tcs.index(cell._tc)
+    columns = [tc for tc in tr.iterchildren() if tc.tag == qn('w:tc')]
+    col_idx = columns.index(cell._tc)
 
     tblGrid = tbl.tblGrid
     if tblGrid is None:
         tblGrid = OxmlElement('w:tblGrid')
-        # создаём колонки под текущую строку
-        for _ in range(len(tcs)):
+        for _ in range(len(columns)):
             tblGrid.append(OxmlElement('w:gridCol'))
-        # вставим tblGrid сразу после tblPr (или в начало)
         insert_at = 1 if tbl.tblPr is not None else 0
         tbl.insert(insert_at, tblGrid)
 
@@ -635,14 +650,15 @@ def _ensure_gridcol_min_width(cell, min_width_mm: float) -> None:
 
 
 def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
+    """Вставляет QR-код в документ, отдавая приоритет таблицам с плейсхолдером."""
+
     document = Document(docx_path)
 
-    # 1) СНАЧАЛА ищем в таблицах
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
                 if any(_paragraph_has_placeholder(p) for p in cell.paragraphs):
-                    desired_mm = width_mm  # уже откламплен get_qr_width_mm
+                    desired_mm = width_mm
                     _ensure_table_fixed_layout(cell)
                     _ensure_gridcol_min_width(cell, desired_mm)
 
@@ -653,7 +669,6 @@ def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: f
                         document.save(docx_path)
                         return True
 
-    # 2) ТОЛЬКО если в таблицах не нашли — пробуем тело документа
     if _replace_in_paragraphs(document.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
         document.save(docx_path)
         return True
@@ -670,6 +685,8 @@ MONTHS_RU = {
 
 
 def parse_sum_to_kopecks(price_str: str) -> str:
+    """Преобразует строку с суммой в количество копеек для QR-платежей."""
+
     normalized = (price_str or "").replace(" ", "").replace(",", ".")
     if not normalized:
         return ""
@@ -683,16 +700,19 @@ def parse_sum_to_kopecks(price_str: str) -> str:
 
 
 def get_qr_width_mm(args) -> float:
+    """Читает ширину QR из запроса и ограничивает её допустимым диапазоном."""
+
     raw = (args.get("qr_width_mm", "") or "").strip()
     try:
         width = float(raw.replace(",", ".")) if raw else DEFAULT_QR_WIDTH_MM
     except ValueError:
         width = DEFAULT_QR_WIDTH_MM
-    # жесткий кламп
     return max(MIN_QR_MM, min(width, MAX_QR_MM))
 
 
 def get_payment_details(args, replacements: dict) -> dict:
+    """Собирает реквизиты для QR-платежа из запроса и дефолтных значений."""
+
     details = DEFAULT_PAYMENT_DETAILS.copy()
 
     for query_param, payload_key in QR_QUERY_MAP.items():
@@ -724,26 +744,29 @@ def get_payment_details(args, replacements: dict) -> dict:
 
 
 def format_invoice_date(date_str):
+    """Форматирует дату счёта в человекочитаемый вид или возвращает исходную строку."""
+
     try:
         day, month, year = date_str.strip().split('.')
         return f"{int(day)} {MONTHS_RU[month]} {year} г."
-    except:
-        return date_str  # fallback если не смогли
+    except Exception:
+        return date_str
+
 
 def get_replacements():
+    """Формирует словарь значений для подстановки в шаблон документа."""
+
     args = request.args
 
     price_str = args.get("price", "").replace(",", ".").strip()
     price_text = args.get("price_text", "").strip()
 
-    # Обработка даты
     bill_date_raw = args.get("bill_date", "").strip()
     bill_date = bill_date_raw.split()[0] if bill_date_raw and " " in bill_date_raw else ""
     invoice_date = bill_date or args.get("invoiceDate", "").strip()
     if not invoice_date:
         invoice_date = datetime.today().strftime('%d.%m.%Y')
 
-    # Генерация суммы прописью
     try:
         if not price_text:
             price_float = float(price_str)
@@ -752,10 +775,9 @@ def get_replacements():
             amount_in_words = f"{num2words(rub, lang='ru').capitalize()} рублей {kop:02d} копеек"
         else:
             amount_in_words = price_text
-    except:
+    except Exception:
         amount_in_words = ""
 
-    # Заказчик
     customer_parts = [
         args.get("name", "").strip(),
         args.get("phone", "").strip(),
@@ -763,11 +785,10 @@ def get_replacements():
         args.get("inn", "").strip(),
         args.get("companyName", "").strip()
     ]
-    customer = ", ".join(filter(None, customer_parts))
+    customer = ", \n".join(filter(None, customer_parts))
 
-    # Товар
     product_service = args.get("service", "").strip()
-    product = f"Система привлечения клиентов / {product_service}" if product_service else "Система привлечения клиентов"
+    product = f"Система привлечения клиентов / {product_service}" if product_service else "Система привлеения клиентов"
 
     return {
         "ID": args.get("deal", str(uuid.uuid4())[:8]),
@@ -793,14 +814,20 @@ def get_replacements():
     }
 
 
+
 def prepare_generation_inputs():
+    """Возвращает данные для генерации документов: плейсхолдеры, реквизиты и ширину QR."""
+
     replacements = get_replacements()
     payment_details = get_payment_details(request.args, replacements)
     qr_width_mm = get_qr_width_mm(request.args)
     return replacements, payment_details, qr_width_mm
 
+
 def _rescale_png_to_mm(image_path: str, width_mm: float, dpi: int = 300):
-    if Image is None or not width_mm:
+    """Масштабирует квадратный PNG до указанной ширины в миллиметрах."""
+
+    if Image is None:
         return
     try:
         target_px = max(64, int(round(width_mm / 25.4 * dpi)))
@@ -812,6 +839,8 @@ def _rescale_png_to_mm(image_path: str, width_mm: float, dpi: int = 300):
 
 
 def replace_placeholders_in_docx(docx_path: str, replacements: dict) -> None:
+    """Подставляет значения в плейсхолдеры внутри DOCX с сохранением форматирования."""
+
     doc = Document(docx_path)
 
     def replace_in_paragraph(paragraph):
@@ -819,45 +848,44 @@ def replace_placeholders_in_docx(docx_path: str, replacements: dict) -> None:
             return
         text = "".join(run.text or "" for run in paragraph.runs)
         changed = False
-        for k, v in replacements.items():
-            ph = f"{{{{{k}}}}}"
-            if ph in text:
-                text = text.replace(ph, str(v or ""))
+        for key, value in replacements.items():
+            placeholder = f"{{{{{key}}}}}"
+            if placeholder in text:
+                text = text.replace(placeholder, str(value or ""))
                 changed = True
         if changed:
-            # очищаем все run-ы и записываем один текстом целиком (формат абзаца сохранится)
-            for r in paragraph.runs:
-                r.text = ""
+            for run in paragraph.runs:
+                run.text = ""
             paragraph.runs[0].text = text
 
-    # Тело документа
-    for p in doc.paragraphs:
-        replace_in_paragraph(p)
-
-    # Таблицы (включая вложенные)
     def walk_tables(tables):
-        for t in tables:
-            for row in t.rows:
+        for table in tables:
+            for row in table.rows:
                 for cell in row.cells:
-                    for p in cell.paragraphs:
-                        replace_in_paragraph(p)
+                    for paragraph in cell.paragraphs:
+                        replace_in_paragraph(paragraph)
                     if cell.tables:
                         walk_tables(cell.tables)
+
+    for paragraph in doc.paragraphs:
+        replace_in_paragraph(paragraph)
+
     walk_tables(doc.tables)
 
-    # Хедеры/футеры (на всякий)
-    for sec in doc.sections:
-        for p in sec.header.paragraphs:
-            replace_in_paragraph(p)
-        walk_tables(sec.header.tables)
-        for p in sec.footer.paragraphs:
-            replace_in_paragraph(p)
-        walk_tables(sec.footer.tables)
+    for section in doc.sections:
+        for paragraph in section.header.paragraphs:
+            replace_in_paragraph(paragraph)
+        walk_tables(section.header.tables)
+        for paragraph in section.footer.paragraphs:
+            replace_in_paragraph(paragraph)
+        walk_tables(section.footer.tables)
 
     doc.save(docx_path)
 
 
 def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
+    """Создаёт DOCX и PDF на основе шаблона и реквизитов, возвращая пути к файлам."""
+
     file_id = str(uuid.uuid4())
     docx_path = os.path.join(OUTPUT_DIR, f"{file_id}.docx")
 
@@ -897,8 +925,10 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     return docx_path, pdf_path, qr_path
 
 def _build_service_description() -> dict:
+    """Возвращает краткое описание сервиса и доступные маршруты."""
+
     return {
-        "message": "LeadForce Document Generator", 
+        "message": "LeadForce Document Generator",
         "endpoints": {
             "pdf": "/Document/GetPdf",
             "docx": "/Document/GetDocx",
@@ -939,6 +969,8 @@ def docs():
 
 @app.route("/favicon.ico")
 def favicon():
+    """Возвращает пустой ответ для favicon."""
+
     return ("", 204)
 
 
