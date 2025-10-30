@@ -326,6 +326,19 @@ PAYMENT_QR_FIELDS_ORDER = [
 
 DEFAULT_QR_WIDTH_MM = 35
 
+# Дополнительный запас, который мы оставляем внутри ячейки таблицы при вставке QR.
+# На Linux LibreOffice при конвертации DOCX -> PDF заметно сильнее подрезает
+# изображения, если они вплотную подходят к границам ячейки, поэтому держим
+# небольшой фиксированный и относительный зазоры.
+QR_CELL_MARGIN_MM = 2
+QR_CELL_MARGIN_RATIO = 0.1
+
+# На Linux при конвертации в PDF LibreOffice иногда обрезает саму картинку даже при
+# соблюдении отступов в таблице, если у PNG слишком тонкая белая рамка. Поэтому мы
+# принудительно добавляем запас вокруг QR-кода при сохранении файла.
+QR_IMAGE_PADDING_PX = 24
+QR_IMAGE_PADDING_RATIO = 0.12
+
 
 def build_payment_qr_payload(details: dict) -> str:
     parts = ["ST00012"]
@@ -381,6 +394,7 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     if not hasattr(pil_image, "save"):
         raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
     pil_image.save(qr_path, format="PNG")
+    _ensure_qr_image_padding(qr_path)
 
     return payload, qr_path
 
@@ -401,24 +415,66 @@ def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_
     return False
 
 
+def _ensure_qr_image_padding(image_path: str) -> None:
+    """Добавляет белую рамку вокруг QR-кода, чтобы избежать обрезания при экспорте."""
+    if Image is None:
+        return
+
+    try:
+        with Image.open(image_path) as img:
+            qr_image = img.convert("RGB")
+            min_side = min(qr_image.size)
+            padding = max(int(min_side * QR_IMAGE_PADDING_RATIO), QR_IMAGE_PADDING_PX)
+            if padding <= 0:
+                return
+
+            new_size = (qr_image.width + padding * 2, qr_image.height + padding * 2)
+            padded = Image.new("RGB", new_size, "white")
+            padded.paste(qr_image, (padding, padding))
+            padded.save(image_path, format="PNG")
+    except Exception:
+        traceback.print_exc()
+
+
+def _apply_qr_margin(limit_mm: float) -> float:
+    """Возвращает максимально допустимую ширину с учётом фиксированного и относительного зазоров."""
+    if not limit_mm:
+        return 0
+
+    margin = max(QR_CELL_MARGIN_MM, limit_mm * QR_CELL_MARGIN_RATIO)
+    return max(limit_mm - margin, 5)
+
+
 def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
-    """Return width that fits into the table cell/row with a small margin."""
+    """Return width that fits into the table cell/row with a safe margin for PDF export."""
     limits = []
 
     row_height = getattr(row.height, "mm", None)
     if row_height:
-        limits.append(row_height)
+        limits.append(_apply_qr_margin(row_height))
 
-    cell_width = getattr(cell.width, "mm", None)
-    if cell_width:
-        limits.append(cell_width)
+    cell_width_attr = getattr(cell, "width", None)
+    cell_width_mm = getattr(cell_width_attr, "mm", None) if cell_width_attr else None
+    if cell_width_mm:
+        limits.append(_apply_qr_margin(cell_width_mm))
+
+    # Иногда python-docx не устанавливает ширину ячейки, но задаёт её в tcW (twips).
+    if not limits:
+        tc_pr = getattr(getattr(cell, "_tc", None), "tcPr", None)
+        tc_w = getattr(tc_pr, "tcW", None) if tc_pr is not None else None
+        width_twips = getattr(tc_w, "w", None) if tc_w is not None else None
+        try:
+            width_twips_int = int(width_twips) if width_twips is not None else None
+        except (TypeError, ValueError):
+            width_twips_int = None
+        if width_twips_int:
+            width_mm = width_twips_int * 25.4 / 1440
+            limits.append(_apply_qr_margin(width_mm))
 
     if not limits:
-        return width_mm
+        return min(width_mm, DEFAULT_QR_WIDTH_MM)
 
-    # Оставляем небольшой зазор в 2 мм, чтобы LibreOffice не "резал" картинку по границе
     safe_limit = min(limit for limit in limits if limit)
-    safe_limit = max(safe_limit - 2, 5)  # не уменьшаем меньше 5 мм
     return min(width_mm, safe_limit)
 
 
