@@ -6,6 +6,10 @@ import traceback
 import uuid
 from datetime import datetime
 from io import BytesIO
+import zipfile
+from docx.shared import Pt
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
 from typing import Any, Optional, cast
 
@@ -29,9 +33,23 @@ except ImportError:  # pragma: no cover - handled at runtime
 
 try:
     from PIL import Image  # type: ignore[import-not-found]
-except ImportError:  # pragma: no cover - handled at runtime
+    try:
+        from PIL.Image import Resampling as PILResampling  # Pillow ≥ 9.1
+    except Exception:
+        PILResampling = None  # type: ignore[assignment]
+except ImportError:
     Image = None  # type: ignore[assignment]
-import zipfile
+    PILResampling = None  # type: ignore[assignment]
+
+# Явный тип для Pylance
+RESAMPLE_NEAREST: int
+if PILResampling is not None:
+    RESAMPLE_NEAREST = int(PILResampling.NEAREST)  # enum -> int
+elif Image is not None and hasattr(Image, "NEAREST"):
+    RESAMPLE_NEAREST = int(getattr(Image, "NEAREST"))
+else:
+    RESAMPLE_NEAREST = 0  # числовой фоллбэк; PIL понимает 0 как NEAREST
+# --- /Pillow compat ---        # старые версии
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
 OUTPUT_DIR = "./output"
@@ -256,6 +274,8 @@ QR_QUERY_MAP = {
 
 QR_CODE_PLACEHOLDER = "{{QR_CODE}}"
 
+from xml.sax.saxutils import escape
+
 def fill_template_xml(template_path: str, replacements: dict, output_path: str):
     with zipfile.ZipFile(template_path, 'r') as zin:
         with zipfile.ZipFile(output_path, 'w') as zout:
@@ -264,7 +284,8 @@ def fill_template_xml(template_path: str, replacements: dict, output_path: str):
                 if item.filename == 'word/document.xml':
                     xml = data.decode('utf-8')
                     for key, value in replacements.items():
-                        xml = xml.replace(f'{{{{{key}}}}}', value)
+                        safe = escape(str(value or ""))
+                        xml = xml.replace(f'{{{{{key}}}}}', safe)
                     data = xml.encode('utf-8')
                 zout.writestr(item, data)
 
@@ -329,7 +350,9 @@ PAYMENT_QR_FIELDS_ORDER = [
 ]
 
 
-DEFAULT_QR_WIDTH_MM = 35
+DEFAULT_QR_WIDTH_MM = 36  # 35–40 мм — рабочий диапазон для СБП
+MIN_QR_MM = 20
+MAX_QR_MM = 45
 
 # Дополнительный запас, который мы оставляем внутри ячейки таблицы при вставке QR.
 # На Linux LibreOffice при конвертации DOCX -> PDF заметно сильнее подрезает
@@ -341,8 +364,8 @@ QR_CELL_MARGIN_RATIO = 0.1
 # На Linux при конвертации в PDF LibreOffice иногда обрезает саму картинку даже при
 # соблюдении отступов в таблице, если у PNG слишком тонкая белая рамка. Поэтому мы
 # принудительно добавляем запас вокруг QR-кода при сохранении файла.
-QR_IMAGE_PADDING_PX = 24
-QR_IMAGE_PADDING_RATIO = 0.12
+QR_IMAGE_PADDING_PX = 0
+QR_IMAGE_PADDING_RATIO = 0.0
 
 
 def build_payment_qr_payload(details: dict) -> str:
@@ -398,18 +421,53 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     pil_image = qr_image.get_image() if hasattr(qr_image, "get_image") else qr_image
     if not hasattr(pil_image, "save"):
         raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
-    pil_image.save(qr_path, format="PNG")
-    _ensure_qr_image_padding(qr_path)
+    # Даем явный DPI
+    pil_image.save(qr_path, format="PNG", dpi=(300, 300))
 
+    # _ensure_qr_image_padding(qr_path)
     return payload, qr_path
 
+def _zero_paragraph_spacing(paragraph):
+    pf = paragraph.paragraph_format
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(0)
+    pf.line_spacing = 1.0
+    pf.keep_with_next = False
+    pf.keep_together = False
+
+def _set_cell_margins(cell, top=40, bottom=40, left=40, right=40):
+    """
+    Устанавливает внутренние поля ячейки таблицы в twips (1/20 pt).
+    40 twips ≈ 0.7 мм — хватает, чтобы LibreOffice не "съедал" верхние пиксели.
+    """
+    tcPr = cell._tc.get_or_add_tcPr()
+
+    # <w:tcMar>
+    tcMar = tcPr.find(qn('w:tcMar'))
+    if tcMar is None:
+        tcMar = OxmlElement('w:tcMar')
+        tcPr.append(tcMar)
+
+    def _ensure_side(name: str, val: int):
+        # Пытаемся найти существующий элемент (w:top, w:bottom, w:left, w:right, а также w:start/w:end)
+        el = tcMar.find(qn(f'w:{name}'))
+        if el is None:
+            el = OxmlElement(f'w:{name}')
+            tcMar.append(el)
+        el.set(qn('w:w'), str(int(val)))
+        el.set(qn('w:type'), 'dxa')
+
+    # Для совместимости с различными версиями Word/LO зададим и left/right, и start/end
+    for side, val in (('top', top), ('bottom', bottom), ('left', left), ('right', right),
+                      ('start', left), ('end', right)):
+        _ensure_side(side, val)
 
 def _replace_paragraph_with_image(paragraph, image_path: str, width_mm: float):
     while paragraph.runs:
         paragraph._element.remove(paragraph.runs[0]._r)
+    _zero_paragraph_spacing(paragraph)
     run = paragraph.add_run()
     run.add_picture(image_path, width=Mm(width_mm))
-
 
 def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_mm: float) -> bool:
     for paragraph in paragraphs:
@@ -454,17 +512,20 @@ def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
     """Настраивает параметры строки и ячейки таблицы, чтобы QR полностью уместился."""
     try:
         margin = max(QR_CELL_MARGIN_MM, image_width_mm * QR_CELL_MARGIN_RATIO)
-        required_height_mm = image_width_mm + margin
+        required_height_mm = image_width_mm + 2 * margin 
 
         if WD_ROW_HEIGHT_RULE is not None:
             try:
-                if getattr(row, "height_rule", None) == WD_ROW_HEIGHT_RULE.EXACTLY:
-                    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+                row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
             except Exception:
                 traceback.print_exc()
 
-        current_height_mm = getattr(getattr(row, "height", None), "mm", None)
-        if current_height_mm and current_height_mm < required_height_mm:
+        try:
+            current_height_mm = getattr(getattr(row, "height", None), "mm", None)
+        except Exception:
+            current_height_mm = None
+
+        if current_height_mm is None or current_height_mm < required_height_mm:
             try:
                 row.height = Mm(required_height_mm)
                 if WD_ROW_HEIGHT_RULE is not None:
@@ -472,12 +533,14 @@ def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
             except Exception:
                 traceback.print_exc()
 
+        _set_cell_margins(cell, top=40, bottom=40, left=40, right=40)
+
         if WD_ALIGN_VERTICAL is not None and cell is not None:
             try:
-                if cell.vertical_alignment is None:
-                    cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+                cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
             except Exception:
                 traceback.print_exc()
+
     except Exception:
         traceback.print_exc()
 
@@ -493,18 +556,18 @@ def _paragraph_has_placeholder(paragraph) -> bool:
 
 
 def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
+    """
+    Ограничиваем только шириной ячейки. Высота строки здесь не учитывается.
+    """
     limits = []
 
-    row_height = getattr(row.height, "mm", None)
-    if row_height:
-        limits.append(_apply_qr_margin(row_height))
-
+    # 1) Пробуем width из объектной модели
     cell_width_attr = getattr(cell, "width", None)
     cell_width_mm = getattr(cell_width_attr, "mm", None) if cell_width_attr else None
     if cell_width_mm:
         limits.append(_apply_qr_margin(cell_width_mm))
 
-    # Иногда python-docx не устанавливает ширину ячейки, но задаёт её в tcW (twips).
+    # 2) Если python-docx ширину не знает — читаем tcPr/tcW (twips)
     if not limits:
         tc_pr = getattr(getattr(cell, "_tc", None), "tcPr", None)
         tc_w = getattr(tc_pr, "tcW", None) if tc_pr is not None else None
@@ -514,34 +577,89 @@ def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
         except (TypeError, ValueError):
             width_twips_int = None
         if width_twips_int:
-            width_mm = width_twips_int * 25.4 / 1440
-            limits.append(_apply_qr_margin(width_mm))
+            width_mm_from_twips = width_twips_int * 25.4 / 1440
+            limits.append(_apply_qr_margin(width_mm_from_twips))
 
+    # Если совсем ничего не нашли — не режем, оставляем запрошенную ширину
     if not limits:
-        return min(width_mm, DEFAULT_QR_WIDTH_MM)
+        return width_mm
 
     safe_limit = min(limit for limit in limits if limit)
     return min(width_mm, safe_limit)
+
+def _ensure_table_fixed_layout(cell) -> None:
+    tr = cell._tc.getparent()          # CT_Row
+    tbl = tr.getparent()               # CT_Tbl
+    tblPr = tbl.tblPr
+    if tblPr is None:
+        tblPr = OxmlElement('w:tblPr')
+        tbl.insert(0, tblPr)
+    tblLayout = tblPr.find(qn('w:tblLayout'))
+    if tblLayout is None:
+        tblLayout = OxmlElement('w:tblLayout')
+        tblPr.append(tblLayout)
+    tblLayout.set(qn('w:type'), 'fixed')
+
+def _ensure_gridcol_min_width(cell, min_width_mm: float) -> None:
+    """Задаём минимум ширины именно колонке через <w:tblGrid>/<w:gridCol>."""
+    twips = int(round(min_width_mm * 1440 / 25.4))
+    tr = cell._tc.getparent()
+    tbl = tr.getparent()
+
+    # индекс ячейки в строке
+    tcs = [tc for tc in tr.iterchildren() if tc.tag == qn('w:tc')]
+    col_idx = tcs.index(cell._tc)
+
+    tblGrid = tbl.tblGrid
+    if tblGrid is None:
+        tblGrid = OxmlElement('w:tblGrid')
+        # создаём колонки под текущую строку
+        for _ in range(len(tcs)):
+            tblGrid.append(OxmlElement('w:gridCol'))
+        # вставим tblGrid сразу после tblPr (или в начало)
+        insert_at = 1 if tbl.tblPr is not None else 0
+        tbl.insert(insert_at, tblGrid)
+
+    cols = [c for c in tblGrid.iterchildren() if c.tag == qn('w:gridCol')]
+    while len(cols) <= col_idx:
+        tblGrid.append(OxmlElement('w:gridCol'))
+        cols = [c for c in tblGrid.iterchildren() if c.tag == qn('w:gridCol')]
+
+    curr = cols[col_idx].get(qn('w:w'))
+    try:
+        curr_int = int(curr) if curr else 0
+    except ValueError:
+        curr_int = 0
+    if curr_int < twips:
+        cols[col_idx].set(qn('w:w'), str(twips))
 
 
 def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
     document = Document(docx_path)
 
-    if _replace_in_paragraphs(document.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
-        document.save(docx_path)
-        return True
-
+    # 1) СНАЧАЛА ищем в таблицах
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
-                if any(_paragraph_has_placeholder(paragraph) for paragraph in cell.paragraphs):
-                    effective_width = _clamp_width_to_cell(width_mm, row, cell)
+                if any(_paragraph_has_placeholder(p) for p in cell.paragraphs):
+                    desired_mm = width_mm  # уже откламплен get_qr_width_mm
+                    _ensure_table_fixed_layout(cell)
+                    _ensure_gridcol_min_width(cell, desired_mm)
+
+                    effective_width = _clamp_width_to_cell(desired_mm, row, cell)
                     _ensure_cell_can_fit_image(row, cell, effective_width)
+
                     if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, effective_width):
                         document.save(docx_path)
                         return True
 
+    # 2) ТОЛЬКО если в таблицах не нашли — пробуем тело документа
+    if _replace_in_paragraphs(document.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
+        document.save(docx_path)
+        return True
+
     return False
+
 
 MONTHS_RU = {
     '01': 'января', '02': 'февраля', '03': 'марта',
@@ -565,17 +683,13 @@ def parse_sum_to_kopecks(price_str: str) -> str:
 
 
 def get_qr_width_mm(args) -> float:
-    value = (args.get("qr_width_mm", "") or "").strip()
-    if not value:
-        return DEFAULT_QR_WIDTH_MM
-
+    raw = (args.get("qr_width_mm", "") or "").strip()
     try:
-        width = float(value.replace(",", "."))
-        if width <= 0:
-            return DEFAULT_QR_WIDTH_MM
-        return width
+        width = float(raw.replace(",", ".")) if raw else DEFAULT_QR_WIDTH_MM
     except ValueError:
-        return DEFAULT_QR_WIDTH_MM
+        width = DEFAULT_QR_WIDTH_MM
+    # жесткий кламп
+    return max(MIN_QR_MM, min(width, MAX_QR_MM))
 
 
 def get_payment_details(args, replacements: dict) -> dict:
@@ -685,6 +799,16 @@ def prepare_generation_inputs():
     qr_width_mm = get_qr_width_mm(request.args)
     return replacements, payment_details, qr_width_mm
 
+def _rescale_png_to_mm(image_path: str, width_mm: float, dpi: int = 300):
+    if Image is None or not width_mm:
+        return
+    try:
+        target_px = max(64, int(round(width_mm / 25.4 * dpi)))
+        with Image.open(image_path) as img:
+            img = img.resize((target_px, target_px), resample=RESAMPLE_NEAREST)
+            img.save(image_path, format="PNG", dpi=(dpi, dpi))
+    except Exception:
+        traceback.print_exc()
 
 def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     file_id = str(uuid.uuid4())
@@ -712,6 +836,7 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
 
     if qr_payload and qr_path and os.path.exists(qr_path):
         try:
+            _rescale_png_to_mm(qr_path, qr_width_mm)
             insert_qr_code_into_document(docx_path, qr_path, qr_width_mm)
         except Exception:
             traceback.print_exc()
