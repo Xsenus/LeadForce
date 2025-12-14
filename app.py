@@ -1092,7 +1092,7 @@ def favicon():
 
 @app.route("/Document/GetPdf")
 def get_pdf():
-    """Получить PDF с заполненным шаблоном
+    """Получить PDF с заполненным новым шаблоном и логотипом в QR
     ---
     tags:
       - Documents
@@ -1138,10 +1138,16 @@ def get_pdf():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
+        _, pdf_path, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
         return send_file(
             pdf_path,
-            download_name="document.pdf",
+            download_name="document_v2.pdf",
             mimetype="application/pdf",
             as_attachment=True,
         )
@@ -1152,7 +1158,7 @@ def get_pdf():
 
 @app.route("/Document/GetPdfV2")
 def get_pdf_v2():
-    """Получить PDF с заполненным новым шаблоном и логотипом в QR
+    """Получить PDF с заполненным шаблоном
     ---
     tags:
       - Documents
@@ -1186,8 +1192,8 @@ def get_pdf_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-      200:
-        description: PDF файл с заполненными данными по новому шаблону
+        200:
+          description: PDF файл с заполненными данными
         content:
           application/pdf:
             schema:
@@ -1198,16 +1204,10 @@ def get_pdf_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(
-            replacements,
-            payment_details,
-            qr_width_mm,
-            template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
-        )
+        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
         return send_file(
             pdf_path,
-            download_name="document_v2.pdf",
+            download_name="document.pdf",
             mimetype="application/pdf",
             as_attachment=True,
         )
@@ -1217,7 +1217,7 @@ def get_pdf_v2():
 
 @app.route("/Document/GetDocx")
 def get_docx():
-    """Получить DOCX с заполненным шаблоном
+    """Получить DOCX с новым шаблоном и логотипом в QR
     ---
     tags:
       - Documents
@@ -1263,10 +1263,16 @@ def get_docx():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
+        docx_path, _, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
         return send_file(
             docx_path,
-            download_name="document.docx",
+            download_name="document_v2.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             as_attachment=True,
         )
@@ -1277,7 +1283,7 @@ def get_docx():
 
 @app.route("/Document/GetDocxV2")
 def get_docx_v2():
-    """Получить DOCX с новым шаблоном и логотипом в QR
+    """Получить DOCX с заполненным шаблоном
     ---
     tags:
       - Documents
@@ -1311,8 +1317,8 @@ def get_docx_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-      200:
-        description: DOCX файл с заполненными данными по новому шаблону
+        200:
+          description: DOCX файл с заполненными данными
         content:
           application/vnd.openxmlformats-officedocument.wordprocessingml.document:
             schema:
@@ -1323,16 +1329,10 @@ def get_docx_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(
-            replacements,
-            payment_details,
-            qr_width_mm,
-            template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
-        )
+        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
         return send_file(
             docx_path,
-            download_name="document_v2.docx",
+            download_name="document.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             as_attachment=True,
         )
@@ -1342,7 +1342,7 @@ def get_docx_v2():
 
 @app.route("/Document/GetPdfZip")
 def get_pdf_zip():
-    """Получить ZIP с PDF файлом
+    """Получить ZIP с PDF по новому шаблону
     ---
     tags:
       - Documents
@@ -1388,9 +1388,15 @@ def get_pdf_zip():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
-        zip_buffer = zip_single_file(pdf_path, "document.pdf")
-        return send_file(zip_buffer, download_name="document_pdf.zip", mimetype="application/zip", as_attachment=True)
+        _, pdf_path, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        zip_buffer = zip_single_file(pdf_path, "document_v2.pdf")
+        return send_file(zip_buffer, download_name="document_v2_pdf.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -1398,7 +1404,7 @@ def get_pdf_zip():
 
 @app.route("/Document/GetPdfZipV2")
 def get_pdf_zip_v2():
-    """Получить ZIP с PDF по новому шаблону
+    """Получить ZIP с PDF файлом
     ---
     tags:
       - Documents
@@ -1432,8 +1438,8 @@ def get_pdf_zip_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-      200:
-        description: ZIP архив с PDF по новому шаблону
+        200:
+          description: ZIP архив с PDF
         content:
           application/zip:
             schema:
@@ -1444,22 +1450,16 @@ def get_pdf_zip_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(
-            replacements,
-            payment_details,
-            qr_width_mm,
-            template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
-        )
-        zip_buffer = zip_single_file(pdf_path, "document_v2.pdf")
-        return send_file(zip_buffer, download_name="document_v2_pdf.zip", mimetype="application/zip", as_attachment=True)
+        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
+        zip_buffer = zip_single_file(pdf_path, "document.pdf")
+        return send_file(zip_buffer, download_name="document_pdf.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 @app.route("/Document/GetDocxZip")
 def get_docx_zip():
-    """Получить ZIP с DOCX файлом
+    """Получить ZIP с DOCX по новому шаблону
     ---
     tags:
       - Documents
@@ -1505,9 +1505,15 @@ def get_docx_zip():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
-        zip_buffer = zip_single_file(docx_path, "document.docx")
-        return send_file(zip_buffer, download_name="document_docx.zip", mimetype="application/zip", as_attachment=True)
+        docx_path, _, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        zip_buffer = zip_single_file(docx_path, "document_v2.docx")
+        return send_file(zip_buffer, download_name="document_v2_docx.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
@@ -1515,7 +1521,7 @@ def get_docx_zip():
 
 @app.route("/Document/GetDocxZipV2")
 def get_docx_zip_v2():
-    """Получить ZIP с DOCX по новому шаблону
+    """Получить ZIP с DOCX файлом
     ---
     tags:
       - Documents
@@ -1549,8 +1555,8 @@ def get_docx_zip_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-      200:
-        description: ZIP архив с DOCX по новому шаблону
+        200:
+          description: ZIP архив с DOCX
         content:
           application/zip:
             schema:
@@ -1561,15 +1567,9 @@ def get_docx_zip_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(
-            replacements,
-            payment_details,
-            qr_width_mm,
-            template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
-        )
-        zip_buffer = zip_single_file(docx_path, "document_v2.docx")
-        return send_file(zip_buffer, download_name="document_v2_docx.zip", mimetype="application/zip", as_attachment=True)
+        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
+        zip_buffer = zip_single_file(docx_path, "document.docx")
+        return send_file(zip_buffer, download_name="document_docx.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
