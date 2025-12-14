@@ -53,7 +53,7 @@ else:
 # --- /Pillow compat ---        # старые версии
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
-NEW_TEMPLATE_PATH = "./Templates/LeadsForce_v2.docx"
+NEW_TEMPLATE_PATH = "./Templates/LeadsForce_v3.docx"
 QR_LOGO_PATH = "./Templates/qr_logo.png"
 OUTPUT_DIR = "./output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
