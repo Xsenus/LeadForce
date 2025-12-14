@@ -26,9 +26,10 @@ from num2words import num2words
 
 try:
     import qrcode  # type: ignore[import-not-found]
-    from qrcode.constants import ERROR_CORRECT_M  # type: ignore[import-not-found]
+    from qrcode.constants import ERROR_CORRECT_H, ERROR_CORRECT_M  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - handled at runtime
     qrcode = None  # type: ignore[assignment]
+    ERROR_CORRECT_H = None  # type: ignore[assignment]
     ERROR_CORRECT_M = None  # type: ignore[assignment]
 
 try:
@@ -52,6 +53,8 @@ else:
 # --- /Pillow compat ---        # старые версии
 
 TEMPLATE_PATH = "./Templates/LeadsForce_v0.docx"
+NEW_TEMPLATE_PATH = "./Templates/LeadsForce_v2.docx"
+QR_LOGO_PATH = "./Templates/qr_logo.png"
 OUTPUT_DIR = "./output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -441,6 +444,70 @@ def generate_payment_qr_image(details: dict, file_id: str) -> tuple[str, str]:
     if not hasattr(pil_image, "save"):
         raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
     pil_image.save(qr_path, format="PNG", dpi=(300, 300))
+    return payload, qr_path
+
+
+def generate_payment_qr_image_with_logo(
+    details: dict,
+    file_id: str,
+    logo_path: str = QR_LOGO_PATH,
+    logo_ratio: float = 0.24,
+) -> tuple[str, str]:
+    """Генерирует QR-код с логотипом по центру для нового шаблона."""
+
+    missing = _require_qr_dependencies()
+    if missing:
+        raise RuntimeError(
+            "Для генерации QR-кода необходимо установить зависимости: "
+            f"{missing}. Выполните 'pip install -r requirements.txt'."
+        )
+
+    payload = build_payment_qr_payload(details)
+    if len(payload) <= len("ST00012"):
+        return "", ""
+
+    qr_path = os.path.join(OUTPUT_DIR, f"{file_id}_qr.png")
+    qr_module = cast(Any, qrcode)
+    error_correction = cast(int, ERROR_CORRECT_H or ERROR_CORRECT_M)
+    qr = qr_module.QRCode(error_correction=error_correction, box_size=10, border=4)
+    qr.add_data(payload)
+    qr.make(fit=True)
+    qr_image = qr.make_image(fill_color="black", back_color="white")
+    pil_image = qr_image.get_image() if hasattr(qr_image, "get_image") else qr_image
+    if not hasattr(pil_image, "save"):
+        raise TypeError("Объект QR-кода не поддерживает сохранение в файл")
+    pil_image.save(qr_path, format="PNG", dpi=(300, 300))
+
+    if Image is None:
+        return payload, qr_path
+
+    try:
+        if not (logo_path and os.path.exists(logo_path)):
+            return payload, qr_path
+
+        with Image.open(qr_path) as qr_img:
+            qr_rgba = qr_img.convert("RGBA")
+            with Image.open(logo_path) as logo_img:
+                logo_rgba = logo_img.convert("RGBA")
+                max_logo_side = max(1, int(qr_rgba.size[0] * logo_ratio))
+                logo_rgba = logo_rgba.resize((max_logo_side, max_logo_side), resample=RESAMPLE_NEAREST)
+
+                padding = max(2, max_logo_side // 8)
+                bg_size = max_logo_side + padding * 2
+                background = Image.new("RGBA", (bg_size, bg_size), "white")
+                offset = ((bg_size - max_logo_side) // 2, (bg_size - max_logo_side) // 2)
+                background.paste(logo_rgba, offset, logo_rgba)
+
+                paste_position = (
+                    (qr_rgba.width - bg_size) // 2,
+                    (qr_rgba.height - bg_size) // 2,
+                )
+                qr_rgba.paste(background, paste_position, background)
+
+            qr_rgba.save(qr_path, format="PNG", dpi=(300, 300))
+    except Exception:
+        traceback.print_exc()
+
     return payload, qr_path
 
 def _zero_paragraph_spacing(paragraph):
@@ -892,7 +959,13 @@ def replace_placeholders_in_docx(docx_path: str, replacements: dict) -> None:
     doc.save(docx_path)
 
 
-def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
+def build_doc(
+    replacements: dict,
+    payment_details: dict,
+    qr_width_mm: float,
+    template_path: str = TEMPLATE_PATH,
+    qr_generator=generate_payment_qr_image,
+):
     """Создаёт DOCX и PDF на основе шаблона и реквизитов, возвращая пути к файлам."""
 
     file_id = str(uuid.uuid4())
@@ -903,7 +976,7 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
     qr_path = ""
 
     try:
-        qr_payload, qr_path = generate_payment_qr_image(payment_details, file_id)
+        qr_payload, qr_path = qr_generator(payment_details, file_id)
     except Exception as qr_error:
         traceback.print_exc()
         replacements_for_template["PAYMENT_QR_PAYLOAD"] = str(qr_error)
@@ -916,7 +989,7 @@ def build_doc(replacements: dict, payment_details: dict, qr_width_mm: float):
         except Exception:
             traceback.print_exc()
 
-    fill_template_xml(TEMPLATE_PATH, replacements_for_template, docx_path)
+    fill_template_xml(template_path, replacements_for_template, docx_path)
 
     try:
         replace_placeholders_in_docx(docx_path, replacements_for_template)
@@ -941,8 +1014,12 @@ def _build_service_description() -> dict:
         "endpoints": {
             "pdf": "/Document/GetPdf",
             "docx": "/Document/GetDocx",
+            "pdf_v2": "/Document/GetPdfV2",
+            "docx_v2": "/Document/GetDocxV2",
             "zip_pdf": "/Document/GetPdfZip",
             "zip_docx": "/Document/GetDocxZip",
+            "zip_pdf_v2": "/Document/GetPdfZipV2",
+            "zip_docx_v2": "/Document/GetDocxZipV2",
             "zip_all": "/Document/GetAllZip",
             "qr_png": "/Document/GetPaymentQr"
         },
@@ -1042,6 +1119,72 @@ def get_pdf():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/Document/GetPdfV2")
+def get_pdf_v2():
+    """Получить PDF с заполненным новым шаблоном и логотипом в QR
+    ---
+    tags:
+      - Documents
+    produces:
+      - application/pdf
+    parameters:
+      - $ref: '#/parameters/price'
+      - $ref: '#/parameters/price_text'
+      - $ref: '#/parameters/bill_date'
+      - $ref: '#/parameters/invoiceDate'
+      - $ref: '#/parameters/deal'
+      - $ref: '#/parameters/service'
+      - $ref: '#/parameters/city'
+      - $ref: '#/parameters/lead_sum'
+      - $ref: '#/parameters/lead_cost'
+      - $ref: '#/parameters/revenue'
+      - $ref: '#/parameters/email'
+      - $ref: '#/parameters/phone'
+      - $ref: '#/parameters/name'
+      - $ref: '#/parameters/inn'
+      - $ref: '#/parameters/companyName'
+      - $ref: '#/parameters/qr_sum'
+      - $ref: '#/parameters/qr_purpose'
+      - $ref: '#/parameters/qr_width_mm'
+      - $ref: '#/parameters/qr_name'
+      - $ref: '#/parameters/qr_personal_account'
+      - $ref: '#/parameters/qr_bank_name'
+      - $ref: '#/parameters/qr_bic'
+      - $ref: '#/parameters/qr_correspondent_account'
+      - $ref: '#/parameters/qr_inn'
+      - $ref: '#/parameters/qr_kpp'
+      - $ref: '#/parameters/qr_payer_address'
+    responses:
+      200:
+        description: PDF файл с заполненными данными по новому шаблону
+        content:
+          application/pdf:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
+    try:
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        _, pdf_path, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        return send_file(
+            pdf_path,
+            download_name="document_v2.pdf",
+            mimetype="application/pdf",
+            as_attachment=True,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/Document/GetDocx")
 def get_docx():
     """Получить DOCX с заполненным шаблоном
@@ -1094,6 +1237,72 @@ def get_docx():
         return send_file(
             docx_path,
             download_name="document.docx",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            as_attachment=True,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/Document/GetDocxV2")
+def get_docx_v2():
+    """Получить DOCX с новым шаблоном и логотипом в QR
+    ---
+    tags:
+      - Documents
+    produces:
+      - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    parameters:
+      - $ref: '#/parameters/price'
+      - $ref: '#/parameters/price_text'
+      - $ref: '#/parameters/bill_date'
+      - $ref: '#/parameters/invoiceDate'
+      - $ref: '#/parameters/deal'
+      - $ref: '#/parameters/service'
+      - $ref: '#/parameters/city'
+      - $ref: '#/parameters/lead_sum'
+      - $ref: '#/parameters/lead_cost'
+      - $ref: '#/parameters/revenue'
+      - $ref: '#/parameters/email'
+      - $ref: '#/parameters/phone'
+      - $ref: '#/parameters/name'
+      - $ref: '#/parameters/inn'
+      - $ref: '#/parameters/companyName'
+      - $ref: '#/parameters/qr_sum'
+      - $ref: '#/parameters/qr_purpose'
+      - $ref: '#/parameters/qr_width_mm'
+      - $ref: '#/parameters/qr_name'
+      - $ref: '#/parameters/qr_personal_account'
+      - $ref: '#/parameters/qr_bank_name'
+      - $ref: '#/parameters/qr_bic'
+      - $ref: '#/parameters/qr_correspondent_account'
+      - $ref: '#/parameters/qr_inn'
+      - $ref: '#/parameters/qr_kpp'
+      - $ref: '#/parameters/qr_payer_address'
+    responses:
+      200:
+        description: DOCX файл с заполненными данными по новому шаблону
+        content:
+          application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
+    try:
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        docx_path, _, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        return send_file(
+            docx_path,
+            download_name="document_v2.docx",
             mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             as_attachment=True,
         )
@@ -1156,6 +1365,68 @@ def get_pdf_zip():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/Document/GetPdfZipV2")
+def get_pdf_zip_v2():
+    """Получить ZIP с PDF по новому шаблону
+    ---
+    tags:
+      - Documents
+    produces:
+      - application/zip
+    parameters:
+      - $ref: '#/parameters/price'
+      - $ref: '#/parameters/price_text'
+      - $ref: '#/parameters/bill_date'
+      - $ref: '#/parameters/invoiceDate'
+      - $ref: '#/parameters/deal'
+      - $ref: '#/parameters/service'
+      - $ref: '#/parameters/city'
+      - $ref: '#/parameters/lead_sum'
+      - $ref: '#/parameters/lead_cost'
+      - $ref: '#/parameters/revenue'
+      - $ref: '#/parameters/email'
+      - $ref: '#/parameters/phone'
+      - $ref: '#/parameters/name'
+      - $ref: '#/parameters/inn'
+      - $ref: '#/parameters/companyName'
+      - $ref: '#/parameters/qr_sum'
+      - $ref: '#/parameters/qr_purpose'
+      - $ref: '#/parameters/qr_width_mm'
+      - $ref: '#/parameters/qr_name'
+      - $ref: '#/parameters/qr_personal_account'
+      - $ref: '#/parameters/qr_bank_name'
+      - $ref: '#/parameters/qr_bic'
+      - $ref: '#/parameters/qr_correspondent_account'
+      - $ref: '#/parameters/qr_inn'
+      - $ref: '#/parameters/qr_kpp'
+      - $ref: '#/parameters/qr_payer_address'
+    responses:
+      200:
+        description: ZIP архив с PDF по новому шаблону
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
+    try:
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        _, pdf_path, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        zip_buffer = zip_single_file(pdf_path, "document_v2.pdf")
+        return send_file(zip_buffer, download_name="document_v2_pdf.zip", mimetype="application/zip", as_attachment=True)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/Document/GetDocxZip")
 def get_docx_zip():
     """Получить ZIP с DOCX файлом
@@ -1207,6 +1478,68 @@ def get_docx_zip():
         docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
         zip_buffer = zip_single_file(docx_path, "document.docx")
         return send_file(zip_buffer, download_name="document_docx.zip", mimetype="application/zip", as_attachment=True)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/Document/GetDocxZipV2")
+def get_docx_zip_v2():
+    """Получить ZIP с DOCX по новому шаблону
+    ---
+    tags:
+      - Documents
+    produces:
+      - application/zip
+    parameters:
+      - $ref: '#/parameters/price'
+      - $ref: '#/parameters/price_text'
+      - $ref: '#/parameters/bill_date'
+      - $ref: '#/parameters/invoiceDate'
+      - $ref: '#/parameters/deal'
+      - $ref: '#/parameters/service'
+      - $ref: '#/parameters/city'
+      - $ref: '#/parameters/lead_sum'
+      - $ref: '#/parameters/lead_cost'
+      - $ref: '#/parameters/revenue'
+      - $ref: '#/parameters/email'
+      - $ref: '#/parameters/phone'
+      - $ref: '#/parameters/name'
+      - $ref: '#/parameters/inn'
+      - $ref: '#/parameters/companyName'
+      - $ref: '#/parameters/qr_sum'
+      - $ref: '#/parameters/qr_purpose'
+      - $ref: '#/parameters/qr_width_mm'
+      - $ref: '#/parameters/qr_name'
+      - $ref: '#/parameters/qr_personal_account'
+      - $ref: '#/parameters/qr_bank_name'
+      - $ref: '#/parameters/qr_bic'
+      - $ref: '#/parameters/qr_correspondent_account'
+      - $ref: '#/parameters/qr_inn'
+      - $ref: '#/parameters/qr_kpp'
+      - $ref: '#/parameters/qr_payer_address'
+    responses:
+      200:
+        description: ZIP архив с DOCX по новому шаблону
+        content:
+          application/zip:
+            schema:
+              type: string
+              format: binary
+      500:
+        description: Ошибка генерации документа
+    """
+    try:
+        replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        docx_path, _, _ = build_doc(
+            replacements,
+            payment_details,
+            qr_width_mm,
+            template_path=NEW_TEMPLATE_PATH,
+            qr_generator=generate_payment_qr_image_with_logo,
+        )
+        zip_buffer = zip_single_file(docx_path, "document_v2.docx")
+        return send_file(zip_buffer, download_name="document_v2_docx.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
