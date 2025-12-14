@@ -594,6 +594,32 @@ def _apply_qr_margin(limit_mm: float) -> float:
     return max(limit_mm - margin, 5)
 
 
+def _measure_cell_width_mm(cell) -> Optional[float]:
+    """Возвращает максимальную ширину ячейки в миллиметрах, если она задана."""
+
+    widths = []
+
+    cell_width_attr = getattr(cell, "width", None)
+    cell_width_mm = getattr(cell_width_attr, "mm", None) if cell_width_attr else None
+    if cell_width_mm:
+        widths.append(cell_width_mm)
+
+    tc_pr = getattr(getattr(cell, "_tc", None), "tcPr", None)
+    tc_w = getattr(tc_pr, "tcW", None) if tc_pr is not None else None
+    width_twips = getattr(tc_w, "w", None) if tc_w is not None else None
+    try:
+        width_twips_int = int(width_twips) if width_twips is not None else None
+    except (TypeError, ValueError):
+        width_twips_int = None
+    if width_twips_int:
+        widths.append(width_twips_int * 25.4 / 1440)
+
+    if not widths:
+        return None
+
+    return max(widths)
+
+
 def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
     """Настраивает параметры строки и ячейки таблицы, чтобы QR полностью уместился."""
     try:
@@ -669,7 +695,7 @@ def _clamp_width_to_cell(width_mm: float, row, cell) -> float:
         return width_mm
 
     safe_limit = min(limit for limit in limits if limit)
-    return min(width_mm, safe_limit)
+    return safe_limit
 
 def _ensure_table_fixed_layout(cell) -> None:
     """Включает фиксированную ширину колонок для таблицы, содержащей ячейку."""
@@ -727,9 +753,13 @@ def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: f
         for row in table.rows:
             for cell in row.cells:
                 if any(_paragraph_has_placeholder(p) for p in cell.paragraphs):
-                    desired_mm = width_mm
+                    cell_width_mm = _measure_cell_width_mm(cell)
+                    desired_mm = cell_width_mm or width_mm
                     _ensure_table_fixed_layout(cell)
-                    _ensure_gridcol_min_width(cell, desired_mm)
+                    _ensure_gridcol_min_width(
+                        cell,
+                        max(desired_mm, cell_width_mm or 0, width_mm),
+                    )
 
                     effective_width = _clamp_width_to_cell(desired_mm, row, cell)
                     _ensure_cell_can_fit_image(row, cell, effective_width)
