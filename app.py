@@ -1192,8 +1192,8 @@ def get_pdf_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-        200:
-          description: PDF файл с заполненными данными
+      200:
+        description: PDF файл с заполненными данными
         content:
           application/pdf:
             schema:
@@ -1317,8 +1317,8 @@ def get_docx_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-        200:
-          description: DOCX файл с заполненными данными
+      200:
+        description: DOCX файл с заполненными данными
         content:
           application/vnd.openxmlformats-officedocument.wordprocessingml.document:
             schema:
@@ -1438,8 +1438,8 @@ def get_pdf_zip_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-        200:
-          description: ZIP архив с PDF
+      200:
+        description: ZIP архив с PDF
         content:
           application/zip:
             schema:
@@ -1555,8 +1555,8 @@ def get_docx_zip_v2():
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
     responses:
-        200:
-          description: ZIP архив с DOCX
+      200:
+        description: ZIP архив с DOCX
         content:
           application/zip:
             schema:
