@@ -1005,14 +1005,22 @@ def get_replacements():
     customer = ", \n".join(filter(None, customer_parts))
 
     product_service = args.get("service", "").strip()
-    product = f"Система привлечения клиентов / {product_service}" if product_service else "Система привлечения клиентов"
+    city = args.get("city", "").strip()
+
+    # Отдельно формируем суффикс: "{service} - {city}" (или только одну часть, если второй нет)
+    product_suffix_parts = [p for p in [product_service, city] if p]
+    product_suffix = " - ".join(product_suffix_parts)  # service - city / service / city / ""
+
+    # Итоговое наименование продукта
+    product_base = "Система привлечения клиентов"
+    product = f"{product_base} / {product_suffix}" if product_suffix else product_base
 
     return {
         "ID": args.get("deal", str(uuid.uuid4())[:8]),
         "INVOICE_DATE": format_invoice_date(invoice_date),
         "CUSTOMER": customer,
         "PRODUCT": product,
-        "PRODUCT_SERVICE": product_service,
+        "PRODUCT_SERVICE": product_suffix,
         "SUM": price_str,
         "AMOUNT_IN_WORDS": amount_in_words,
         "DEAL": args.get("deal", ""),
@@ -1027,6 +1035,8 @@ def get_replacements():
         "NAME": args.get("name", ""),
         "INN": args.get("inn", ""),
         "COMPANYNAME": args.get("companyName", ""),
+        
+        "PRODUCT_SERVICE_CITY": product_suffix,
         
         "CUSTOMER_NAME": args.get("name", "").strip(),
         "CUSTOMER_EMAIL": args.get("email", "").strip(),
