@@ -42,6 +42,11 @@ except ImportError:
     Image = None  # type: ignore[assignment]
     PILResampling = None  # type: ignore[assignment]
 
+import re
+
+QR_CODE_PLACEHOLDER = "{{QR_CODE}}"
+QR_CODE_REGEX = re.compile(r"\{\s*\{\s*QR_CODE\s*\}\s*\}", re.UNICODE)
+
 # Явный тип для Pylance
 RESAMPLE_NEAREST: int
 if PILResampling is not None:
@@ -369,8 +374,8 @@ PAYMENT_QR_FIELDS_ORDER = [
 
 
 DEFAULT_QR_WIDTH_MM = 36  # 35–40 мм — рабочий диапазон для СБП
-MIN_QR_MM = 20
-MAX_QR_MM = 45
+MIN_QR_MM = 55
+MAX_QR_MM = 55
 
 # Дополнительный запас, который мы оставляем внутри ячейки таблицы при вставке QR.
 # На Linux LibreOffice при конвертации DOCX -> PDF заметно сильнее подрезает
@@ -553,14 +558,24 @@ def _replace_paragraph_with_image(paragraph, image_path: str, width_mm: float):
     run.add_picture(image_path, width=Mm(width_mm))
 
 
-def _replace_in_paragraphs(paragraphs, placeholder: str, image_path: str, width_mm: float) -> bool:
-    """Заменяет плейсхолдер на изображение и сообщает об успешной вставке."""
-
+def _replace_in_paragraphs(paragraphs, _placeholder: str, image_path: str, width_mm: float) -> bool:
     for paragraph in paragraphs:
-        if placeholder in paragraph.text:
-            paragraph.text = paragraph.text.replace(placeholder, "")
-            _replace_paragraph_with_image(paragraph, image_path, width_mm)
-            return True
+        # берём “сырое” содержимое по runs — так надёжнее
+        raw = "".join((run.text or "") for run in getattr(paragraph, "runs", []))
+        if not raw:
+            raw = paragraph.text or ""
+        if not QR_CODE_REGEX.search(raw):
+            continue
+
+        # чистим абзац полностью и вставляем картинку
+        while paragraph.runs:
+            paragraph._element.remove(paragraph.runs[0]._r)
+
+        _zero_paragraph_spacing(paragraph)
+        run = paragraph.add_run()
+        run.add_picture(image_path, width=Mm(width_mm))
+        return True
+
     return False
 
 
@@ -658,13 +673,12 @@ def _ensure_cell_can_fit_image(row, cell, image_width_mm: float) -> None:
 
 
 def _paragraph_has_placeholder(paragraph) -> bool:
-    """Возвращает True, если параграф содержит маркер вставки QR-кода."""
-
-    if QR_CODE_PLACEHOLDER in getattr(paragraph, "text", ""):
-        return True
-
     try:
-        return QR_CODE_PLACEHOLDER in ''.join(run.text for run in getattr(paragraph, "runs", []))
+        t1 = getattr(paragraph, "text", "") or ""
+        if QR_CODE_REGEX.search(t1):
+            return True
+        t2 = "".join((run.text or "") for run in getattr(paragraph, "runs", []))
+        return QR_CODE_REGEX.search(t2) is not None
     except Exception:
         return False
 
@@ -744,33 +758,137 @@ def _ensure_gridcol_min_width(cell, min_width_mm: float) -> None:
         cols[col_idx].set(qn('w:w'), str(twips))
 
 
-def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
-    """Вставляет QR-код в документ, отдавая приоритет таблицам с плейсхолдером."""
+def _tc_grid_span(tc) -> int:
+    tcPr = tc.find(qn('w:tcPr'))
+    if tcPr is None:
+        return 1
+    gs = tcPr.find(qn('w:gridSpan'))
+    if gs is None:
+        return 1
+    try:
+        return int(gs.get(qn('w:val')))
+    except Exception:
+        return 1
 
+
+def _tc_grid_start(tr, target_tc) -> int:
+    start = 0
+    for tc in tr.findall(qn('w:tc')):
+        if tc is target_tc:
+            return start
+        start += _tc_grid_span(tc)
+    return start
+
+
+def _cell_width_mm_from_tblgrid(table, cell):
+    # python-docx сам знает namespace 'w', передавать namespaces нельзя
+    grid_cols = table._tbl.xpath('./w:tblGrid/w:gridCol')
+    if not grid_cols:
+        return None
+
+    widths_twips = []
+    for gc in grid_cols:
+        w = gc.get(qn('w:w'))
+        try:
+            widths_twips.append(int(w) if w else 0)
+        except Exception:
+            widths_twips.append(0)
+
+    tr = cell._tc.getparent()
+    start = _tc_grid_start(tr, cell._tc)
+    span = _tc_grid_span(cell._tc)
+
+    twips = sum(widths_twips[start:start + span]) if start < len(widths_twips) else 0
+    if twips <= 0:
+        return None
+
+    return twips * 25.4 / 1440.0
+
+def insert_qr_code_into_document(docx_path: str, qr_image_path: str, width_mm: float) -> bool:
     document = Document(docx_path)
 
     for table in document.tables:
         for row in table.rows:
             for cell in row.cells:
-                if any(_paragraph_has_placeholder(p) for p in cell.paragraphs):
-                    cell_width_mm = _measure_cell_width_mm(cell)
-                    desired_mm = cell_width_mm or width_mm
-                    _ensure_table_fixed_layout(cell)
-                    _ensure_gridcol_min_width(
-                        cell,
-                        max(desired_mm, cell_width_mm or 0, width_mm),
-                    )
+                if not any(_paragraph_has_placeholder(p) for p in cell.paragraphs):
+                    continue
 
-                    effective_width = _clamp_width_to_cell(desired_mm, row, cell)
-                    _ensure_cell_can_fit_image(row, cell, effective_width)
+                # фиксируем layout таблицы, чтобы картинка не растягивала колонки
+                try:
+                    table.autofit = False
+                except Exception:
+                    pass
 
-                    if _replace_in_paragraphs(cell.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, effective_width):
-                        document.save(docx_path)
-                        return True
+                # ширина ячейки по tblGrid (с учётом gridSpan)
+                cell_w = None
+                try:
+                    cell_w = _cell_width_mm_from_tblgrid(table, cell)
+                except Exception:
+                    traceback.print_exc()
 
-    if _replace_in_paragraphs(document.paragraphs, QR_CODE_PLACEHOLDER, qr_image_path, width_mm):
-        document.save(docx_path)
-        return True
+                effective = width_mm
+                if cell_w:
+                    effective = min(width_mm, max(cell_w - 4.0, 10.0))  # небольшой запас
+
+                # вставляем картинку
+                for p in cell.paragraphs:
+                    raw = "".join((r.text or "") for r in p.runs) or (p.text or "")
+                    if not QR_CODE_REGEX.search(raw):
+                        continue
+
+                    # очистить абзац
+                    while p.runs:
+                        p._element.remove(p.runs[0]._r)
+
+                    _zero_paragraph_spacing(p)
+                    run = p.add_run()
+                    run.add_picture(qr_image_path, width=Mm(effective))
+
+                    document.save(docx_path)
+                    return True
+
+    return False
+
+    document = Document(docx_path)
+
+    for table in document.tables:
+        for row in table.rows:
+            # важно: row.cells при gridSpan может возвращать дубликаты,
+            # поэтому работаем через XML-ячейки и ищем соответствующий python-docx cell
+            tc_list = row._tr.findall(qn('w:tc'))
+            for tc in tc_list:
+                cell = next((c for c in row.cells if c._tc is tc), None)
+                if cell is None:
+                    continue
+
+                if not any(QR_CODE_PLACEHOLDER in p.text for p in cell.paragraphs):
+                    continue
+
+                try:
+                    cell_w = _cell_width_mm_from_tblgrid(table, cell)
+                    # небольшой запас, чтобы картинка точно не упиралась в границы
+                    if cell_w:
+                        effective = min(width_mm, max(cell_w - 4.0, 10.0))  # -4мм = ~2мм слева/справа
+                    else:
+                        effective = width_mm
+
+                    # очистка и вставка
+                    for p in cell.paragraphs:
+                        if QR_CODE_PLACEHOLDER in p.text:
+                            p.text = p.text.replace(QR_CODE_PLACEHOLDER, "")
+                            while p.runs:
+                                p._element.remove(p.runs[0]._r)
+                            p.paragraph_format.space_before = Pt(0)
+                            p.paragraph_format.space_after = Pt(0)
+                            run = p.add_run()
+                            run.add_picture(qr_image_path, width=Mm(effective))
+                            break
+
+                    document.save(docx_path)
+                    return True
+                except Exception:
+                    traceback.print_exc()
+                    return False
 
     return False
 
@@ -1029,7 +1147,10 @@ def build_doc(
     if qr_payload and qr_path and os.path.exists(qr_path):
         try:
             _rescale_png_to_mm(qr_path, qr_width_mm)
-            insert_qr_code_into_document(docx_path, qr_path, qr_width_mm)
+            ok = insert_qr_code_into_document(docx_path, qr_path, qr_width_mm)
+            if not ok:
+                raise RuntimeError("QR плейсхолдер не найден в документе ({{QR_CODE}}). Проверьте шаблон/разбиение runs.")
+
         except Exception:
             traceback.print_exc()
 
