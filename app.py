@@ -1005,13 +1005,14 @@ def get_replacements():
     customer = ", \n".join(filter(None, customer_parts))
 
     product_service = args.get("service", "").strip()
-    product = f"Система привлечения клиентов / {product_service}" if product_service else "Система привлеения клиентов"
+    product = f"Система привлечения клиентов / {product_service}" if product_service else "Система привлечения клиентов"
 
     return {
         "ID": args.get("deal", str(uuid.uuid4())[:8]),
         "INVOICE_DATE": format_invoice_date(invoice_date),
         "CUSTOMER": customer,
         "PRODUCT": product,
+        "PRODUCT_SERVICE": product_service,
         "SUM": price_str,
         "AMOUNT_IN_WORDS": amount_in_words,
         "DEAL": args.get("deal", ""),
