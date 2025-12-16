@@ -1005,12 +1005,11 @@ def get_payment_details(args, replacements: dict) -> dict:
     return details
 
 
-def format_invoice_date(date_str):
-    """Форматирует дату счёта в человекочитаемый вид или возвращает исходную строку."""
-
+def format_invoice_date(date_str: str) -> str:
+    """Возвращает дату как в шаблоне: '31 октября 2025' (без 'г.')."""
     try:
         day, month, year = date_str.strip().split('.')
-        return f"{int(day)} {MONTHS_RU[month]} {year} г."
+        return f"{int(day)} {MONTHS_RU[month]} {year}"
     except Exception:
         return date_str
 
