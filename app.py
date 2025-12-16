@@ -951,11 +951,10 @@ def _build_default_qr_purpose(replacements: dict) -> str:
 
     invoice_id = (replacements.get("ID", "") or "").strip()
     invoice_date = (replacements.get("INVOICE_DATE", "") or "").strip()
-    service = (replacements.get("SERVICE", "") or "").strip()
-    city = (replacements.get("CITY", "") or "").strip()
+    service = replacements.get("SERVICE", "") or ""
+    city = replacements.get("CITY", "") or ""
 
-    suffix_parts = [part for part in [service, city] if part]
-    suffix = "-".join(suffix_parts)
+    suffix = build_product_service_suffix(service, city)
 
     base = "Оплата за систему привлечения клиентов"
     purpose = base
@@ -1011,6 +1010,13 @@ def format_invoice_date(date_str):
         return date_str
 
 
+def build_product_service_suffix(service: str, city: str) -> str:
+    """Возвращает суффикс услуги/города в формате "service - city"."""
+
+    parts = [part.strip() for part in (service, city) if part and part.strip()]
+    return " - ".join(parts)
+
+
 def get_replacements():
     """Формирует словарь значений для подстановки в шаблон документа."""
 
@@ -1045,12 +1051,11 @@ def get_replacements():
     ]
     customer = ", \n".join(filter(None, customer_parts))
 
-    product_service = args.get("service", "").strip()
-    city = args.get("city", "").strip()
+    product_service = args.get("service", "")
+    city = args.get("city", "")
 
     # Отдельно формируем суффикс: "{service} - {city}" (или только одну часть, если второй нет)
-    product_suffix_parts = [p for p in [product_service, city] if p]
-    product_suffix = " - ".join(product_suffix_parts)  # service - city / service / city / ""
+    product_suffix = build_product_service_suffix(product_service, city)
 
     # Итоговое наименование продукта
     product_base = "Система привлечения клиентов"
