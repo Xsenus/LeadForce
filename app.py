@@ -177,6 +177,12 @@ SWAGGER_PARAMETERS = {
         "description": "Назначение платежа для QR",
         "schema": {"type": "string"}
     },
+    "qr_logo": {
+        "name": "qr_logo",
+        "in": "query",
+        "description": "Включить логотип в центр QR-кода (по умолчанию выключено)",
+        "schema": {"type": "boolean"}
+    },
     "qr_width_mm": {
         "name": "qr_width_mm",
         "in": "query",
@@ -268,7 +274,7 @@ DEFAULT_PAYMENT_DETAILS = {
     "BIC": "044525974",
     "CorrespAcc": "30101810145250000974",
     "PayeeINN": "720206359451",
-    "Purpose": "Оплата по счету №{{ID}}"
+    "Purpose": ""
 }
 
 QR_QUERY_MAP = {
@@ -916,6 +922,19 @@ def parse_sum_to_kopecks(price_str: str) -> str:
     return str(int(round(amount * 100)))
 
 
+def should_embed_qr_logo(args) -> bool:
+    """Возвращает True, если в запросе явно включили логотип внутри QR."""
+
+    raw = (args.get("qr_logo", "") or "").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on", "да", "вкл", "enable", "enabled"}
+
+
+def select_qr_generator(args):
+    """Выбирает функцию генерации QR с учётом параметра логотипа."""
+
+    return generate_payment_qr_image_with_logo if should_embed_qr_logo(args) else generate_payment_qr_image
+
+
 def get_qr_width_mm(args) -> float:
     """Читает ширину QR из запроса и ограничивает её допустимым диапазоном."""
 
@@ -925,6 +944,30 @@ def get_qr_width_mm(args) -> float:
     except ValueError:
         width = DEFAULT_QR_WIDTH_MM
     return max(MIN_QR_MM, min(width, MAX_QR_MM))
+
+
+def _build_default_qr_purpose(replacements: dict) -> str:
+    """Формирует назначение платежа на основе сферы, города и даты счёта."""
+
+    invoice_id = (replacements.get("ID", "") or "").strip()
+    invoice_date = (replacements.get("INVOICE_DATE", "") or "").strip()
+    service = (replacements.get("SERVICE", "") or "").strip()
+    city = (replacements.get("CITY", "") or "").strip()
+
+    suffix_parts = [part for part in [service, city] if part]
+    suffix = "-".join(suffix_parts)
+
+    base = "Оплата за систему привлечения клиентов"
+    purpose = base
+    if suffix:
+        purpose += f" ({suffix})"
+
+    if invoice_id:
+        purpose += f" по счету №{invoice_id}"
+    if invoice_date:
+        purpose += f" от {invoice_date}"
+
+    return purpose
 
 
 def get_payment_details(args, replacements: dict) -> dict:
@@ -951,11 +994,9 @@ def get_payment_details(args, replacements: dict) -> dict:
     if purpose_override:
         details["Purpose"] = purpose_override
     else:
-        purpose = details.get("Purpose", "")
-        if purpose and "{{ID}}" in purpose:
-            details["Purpose"] = purpose.replace("{{ID}}", invoice_id)
-        elif not purpose and invoice_id:
-            details["Purpose"] = f"Оплата по счету №{invoice_id}"
+        default_purpose = _build_default_qr_purpose(replacements)
+        if default_purpose:
+            details["Purpose"] = default_purpose
 
     return details
 
@@ -1224,7 +1265,7 @@ def favicon():
 
 @app.route("/Document/GetPdf")
 def get_pdf():
-    """Получить PDF с заполненным новым шаблоном и логотипом в QR
+    """Получить PDF с заполненным новым шаблоном и опциональным логотипом в QR
     ---
     tags:
       - Documents
@@ -1257,6 +1298,7 @@ def get_pdf():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: PDF файл с заполненными данными
@@ -1270,12 +1312,13 @@ def get_pdf():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        qr_generator = select_qr_generator(request.args)
         _, pdf_path, _ = build_doc(
             replacements,
             payment_details,
             qr_width_mm,
             template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
+            qr_generator=qr_generator,
         )
         return send_file(
             pdf_path,
@@ -1323,6 +1366,7 @@ def get_pdf_v2():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: PDF файл с заполненными данными
@@ -1336,7 +1380,10 @@ def get_pdf_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
+        qr_generator = select_qr_generator(request.args)
+        _, pdf_path, _ = build_doc(
+            replacements, payment_details, qr_width_mm, qr_generator=qr_generator
+        )
         return send_file(
             pdf_path,
             download_name="document.pdf",
@@ -1349,7 +1396,7 @@ def get_pdf_v2():
 
 @app.route("/Document/GetDocx")
 def get_docx():
-    """Получить DOCX с новым шаблоном и логотипом в QR
+    """Получить DOCX с новым шаблоном и опциональным логотипом в QR
     ---
     tags:
       - Documents
@@ -1382,6 +1429,7 @@ def get_docx():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: DOCX файл с заполненными данными
@@ -1395,12 +1443,13 @@ def get_docx():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        qr_generator = select_qr_generator(request.args)
         docx_path, _, _ = build_doc(
             replacements,
             payment_details,
             qr_width_mm,
             template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
+            qr_generator=qr_generator,
         )
         return send_file(
             docx_path,
@@ -1448,6 +1497,7 @@ def get_docx_v2():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: DOCX файл с заполненными данными
@@ -1461,7 +1511,10 @@ def get_docx_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
+        qr_generator = select_qr_generator(request.args)
+        docx_path, _, _ = build_doc(
+            replacements, payment_details, qr_width_mm, qr_generator=qr_generator
+        )
         return send_file(
             docx_path,
             download_name="document.docx",
@@ -1507,6 +1560,7 @@ def get_pdf_zip():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: ZIP архив с PDF
@@ -1520,12 +1574,13 @@ def get_pdf_zip():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        qr_generator = select_qr_generator(request.args)
         _, pdf_path, _ = build_doc(
             replacements,
             payment_details,
             qr_width_mm,
             template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
+            qr_generator=qr_generator,
         )
         zip_buffer = zip_single_file(pdf_path, "document_v2.pdf")
         return send_file(zip_buffer, download_name="document_v2_pdf.zip", mimetype="application/zip", as_attachment=True)
@@ -1569,6 +1624,7 @@ def get_pdf_zip_v2():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: ZIP архив с PDF
@@ -1582,7 +1638,10 @@ def get_pdf_zip_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        _, pdf_path, _ = build_doc(replacements, payment_details, qr_width_mm)
+        qr_generator = select_qr_generator(request.args)
+        _, pdf_path, _ = build_doc(
+            replacements, payment_details, qr_width_mm, qr_generator=qr_generator
+        )
         zip_buffer = zip_single_file(pdf_path, "document.pdf")
         return send_file(zip_buffer, download_name="document_pdf.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
@@ -1624,6 +1683,7 @@ def get_docx_zip():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: ZIP архив с DOCX
@@ -1637,12 +1697,13 @@ def get_docx_zip():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
+        qr_generator = select_qr_generator(request.args)
         docx_path, _, _ = build_doc(
             replacements,
             payment_details,
             qr_width_mm,
             template_path=NEW_TEMPLATE_PATH,
-            qr_generator=generate_payment_qr_image_with_logo,
+            qr_generator=qr_generator,
         )
         zip_buffer = zip_single_file(docx_path, "document_v2.docx")
         return send_file(zip_buffer, download_name="document_v2_docx.zip", mimetype="application/zip", as_attachment=True)
@@ -1686,6 +1747,7 @@ def get_docx_zip_v2():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: ZIP архив с DOCX
@@ -1699,7 +1761,10 @@ def get_docx_zip_v2():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, _, _ = build_doc(replacements, payment_details, qr_width_mm)
+        qr_generator = select_qr_generator(request.args)
+        docx_path, _, _ = build_doc(
+            replacements, payment_details, qr_width_mm, qr_generator=qr_generator
+        )
         zip_buffer = zip_single_file(docx_path, "document.docx")
         return send_file(zip_buffer, download_name="document_docx.zip", mimetype="application/zip", as_attachment=True)
     except Exception as e:
@@ -1741,6 +1806,7 @@ def get_all_zip():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: ZIP архив с документами и QR
@@ -1754,7 +1820,10 @@ def get_all_zip():
     """
     try:
         replacements, payment_details, qr_width_mm = prepare_generation_inputs()
-        docx_path, pdf_path, qr_path = build_doc(replacements, payment_details, qr_width_mm)
+        qr_generator = select_qr_generator(request.args)
+        docx_path, pdf_path, qr_path = build_doc(
+            replacements, payment_details, qr_width_mm, qr_generator=qr_generator
+        )
         file_mappings = [
             (docx_path, "document.docx"),
             (pdf_path, "document.pdf"),
@@ -1801,6 +1870,7 @@ def get_payment_qr():
       - $ref: '#/parameters/qr_inn'
       - $ref: '#/parameters/qr_kpp'
       - $ref: '#/parameters/qr_payer_address'
+      - $ref: '#/parameters/qr_logo'
     responses:
       200:
         description: PNG файл с QR-кодом
@@ -1822,8 +1892,9 @@ def get_payment_qr():
     try:
         replacements = get_replacements()
         payment_details = get_payment_details(request.args, replacements)
+        qr_generator = select_qr_generator(request.args)
         try:
-            qr_payload, qr_path = generate_payment_qr_image(payment_details, str(uuid.uuid4()))
+            qr_payload, qr_path = qr_generator(payment_details, str(uuid.uuid4()))
         except RuntimeError as dependency_error:
             return jsonify({"error": str(dependency_error)}), 500
 
