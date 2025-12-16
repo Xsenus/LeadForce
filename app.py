@@ -295,6 +295,11 @@ from xml.sax.saxutils import escape
 def fill_template_xml(template_path: str, replacements: dict, output_path: str):
     """Создаёт копию DOCX-шаблона с заменой плейсхолдеров внутри XML."""
 
+    placeholder_patterns = {
+        key: re.compile(rf"\{{\{{\s*{re.escape(key)}\s*\}}\}}", re.UNICODE)
+        for key in replacements
+    }
+
     with zipfile.ZipFile(template_path, 'r') as zin:
         with zipfile.ZipFile(output_path, 'w') as zout:
             for item in zin.infolist():
@@ -303,7 +308,7 @@ def fill_template_xml(template_path: str, replacements: dict, output_path: str):
                     xml = data.decode('utf-8')
                     for key, value in replacements.items():
                         safe = escape(str(value or ""))
-                        xml = xml.replace(f'{{{{{key}}}}}', safe)
+                        xml = placeholder_patterns[key].sub(safe, xml)
                     data = xml.encode('utf-8')
                 zout.writestr(item, data)
 
@@ -1124,15 +1129,20 @@ def replace_placeholders_in_docx(docx_path: str, replacements: dict) -> None:
 
     doc = Document(docx_path)
 
+    placeholder_patterns = {
+        key: re.compile(rf"\{{\{{\s*{re.escape(key)}\s*\}}\}}", re.UNICODE)
+        for key in replacements
+    }
+
     def replace_in_paragraph(paragraph):
         if not paragraph.runs:
             return
         text = "".join(run.text or "" for run in paragraph.runs)
         changed = False
         for key, value in replacements.items():
-            placeholder = f"{{{{{key}}}}}"
-            if placeholder in text:
-                text = text.replace(placeholder, str(value or ""))
+            placeholder_pattern = placeholder_patterns[key]
+            if placeholder_pattern.search(text):
+                text = placeholder_pattern.sub(str(value or ""), text)
                 changed = True
         if changed:
             for run in paragraph.runs:
