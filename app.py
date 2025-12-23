@@ -268,7 +268,7 @@ swagger_config = {
 swagger = Swagger(app, template=swagger_template, config=swagger_config)
 
 DEFAULT_PAYMENT_DETAILS = {
-    "Name": "ИП Авакопян Наталья Александровна",
+    "Name": "ИП Абакумова Наталья Александровна",
     "PersonalAcc": "40802810600170004778",
     "BankName": "ЗАПАДНО-СИБИРСКОЕ ОБОСОБЛЕННОЕ ПО СИБИРИКС",
     "BIC": "047101651",
