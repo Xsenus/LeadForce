@@ -268,12 +268,12 @@ swagger_config = {
 swagger = Swagger(app, template=swagger_template, config=swagger_config)
 
 DEFAULT_PAYMENT_DETAILS = {
-    "Name": "ИП Абакумова Наталья Александровна",
-    "PersonalAcc": "40802810200006322048",
-    "BankName": "АО «Тинькофф Банк»",
-    "BIC": "044525974",
-    "CorrespAcc": "30101810145250000974",
-    "PayeeINN": "720206359451",
+    "Name": "ИП Авакопян Наталья Александровна",
+    "PersonalAcc": "40802810600170004778",
+    "BankName": "ЗАПАДНО-СИБИРСКОЕ ОБОСОБЛЕННОЕ ПО СИБИРИКС",
+    "BIC": "047101651",
+    "CorrespAcc": "30101810800000000651",
+    "PayeeINN": "7203423851",
     "Purpose": ""
 }
 
